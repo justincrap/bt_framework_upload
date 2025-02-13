@@ -55,12 +55,14 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         else:
             df[f'{model}_{factor}'] = 2 * (series - series.min()) / (series.max() - series.min() + epsilon) - 1
 
-    elif model == 'rsi':
-        df[f'{model}_{factor}'] = talib.RSI(series.values, timeperiod=rolling_window) - 50.0
-
     elif model == 'sma_diff':
         sma = series.rolling(window=rolling_window).mean()
         df[f'{model}_{factor}'] = (series - sma) / (sma + epsilon)
+
+    elif model == 'ewm':
+        ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
+        ewm_std = series.ewm(span=rolling_window, adjust=False).std()
+        df[f'{model}_{factor}'] = (series - ewm_mean) / (ewm_std + epsilon)
 
     elif model == 'momentum':
         momentum = series - series.shift(rolling_window)
@@ -104,8 +106,37 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             df[f'{model}_{factor}'] = (series - roll.mean()) / (roll.max() - roll.min() + epsilon)
         else:
             df[f'{model}_{factor}'] = (series - series.mean()) / (series.max() - series.min() + epsilon)
+
     elif model == 'roc':
         df[f'{model}_{factor}'] = (series - series.shift(rolling_window)) / (series.shift(rolling_window) + epsilon)
+
+    elif model == 'rsi':
+        df[f'{model}_{factor}'] = (talib.RSI(series.values, timeperiod=rolling_window) - 50.0) / 50 * 3
+
+    elif model == 'psy':
+        up_days = np.where(np.diff(series, prepend=series.iloc[0]) > 0, 1, 0)
+        df[f'{model}_{factor}'] = (pdu.Series(up_days).rolling(window=rolling_window, min_periods=1).mean() * 100 - 50) / 50 * 3
+    
+    elif model == 'rvi':
+        delta = np.diff(series, prepend=np.nan)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pdu.Series(gain).rolling(window=rolling_window).mean()
+        avg_loss = pdu.Series(loss).rolling(window=rolling_window).mean()
+        rvi = ((avg_gain / (avg_gain + avg_loss + epsilon)) * 100 - 50) / 50 * 3
+        df[f'{model}_{factor}'] = rvi
+
+    elif model == 'mad':
+        rolling_mean = series.rolling(window=rolling_window).mean()
+        rolling_mad = series.rolling(window=rolling_window).apply(
+            lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
+        )
+        df[f'{model}_{factor}'] = (series - rolling_mean) / (rolling_mad + epsilon)
+
+    elif model == 'ma_ratio':
+        ma = pdu.Series(series).rolling(window=rolling_window).mean()
+        df[f'{model}_{factor}'] = (series / (ma + epsilon)) - 1
+
     return df
 
 @njit
