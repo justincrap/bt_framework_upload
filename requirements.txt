@@ -1,0 +1,8 @@
+matplotlib
+pandas
+numpy
+plotly
+seaborn
+modin[all]
+scipy
+numba
