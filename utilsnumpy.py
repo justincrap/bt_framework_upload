@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import matplotlib.pyplot as plt
-from scipy.stats import rankdata, boxcox, skew
+from scipy.stats import rankdata, boxcox, skew, kurtosis
 import talib
 import math
-from numba import njit
+from numba import njit, jit
 
 def load_data(filename1, filename2):
     """
@@ -404,59 +404,51 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
 
     return df_transformed
 
-def compute_average_drawdown_duration(cumu_pnl: np.ndarray, include_last_incomplete: bool = True) -> float:
+def compute_drawdown_durations(cumu_pnl: np.ndarray,
+                               include_last_incomplete: bool = True) -> list:
     """
-    計算 Average Drawdown Duration (以 bar 為單位)。
-    若最後一次回撤直到資料結束都尚未回到新高，
-    可以依照參數 include_last_incomplete 設定是否納入計算。
+    回傳所有「完整回撤區間」或包含未完成區間(可設定)的長度(單位: bar)。
 
     參數:
     ----------
     cumu_pnl : np.ndarray
-        長度為 N 的累積盈虧序列 (Equity Curve)。
+        長度 N 的累積盈虧序列 (Equity Curve)。
     include_last_incomplete : bool
-        True 表示將最後未結束的回撤一併算入(計算到最後一筆)；
-        False 表示只計算已完成回撤(回到當前新高處)的區段。
+        True 表示將最後未結束的回撤也納入(計算到最後一筆)；
+        False 表示只計算已完整回到新高的回撤。
 
     回傳:
     ----------
-    average_dd_duration : float
-        平均回撤時長(單位: bar)，若完全沒有回撤或資料不足，回傳 0.0。
+    dd_periods : list
+        每一段回撤期間的長度(單位: bar)。
+        例如 [10, 5, 32] 表示歷史上出現了三次回撤區間，分別長 10、5、32 bar。
     """
-    
     if len(cumu_pnl) < 2:
-        return 0.0
-    
-    # 計算歷史新高序列
+        return []
+
     cumu_max = np.maximum.accumulate(cumu_pnl)
-    
-    # 判定是否在回撤狀態
-    # 只要 cumu_pnl < cumu_max，就算是回撤
-    in_drawdown_flags = (cumu_pnl < cumu_max)
-    
-    dd_periods = []
     in_drawdown = False
     start_idx = 0
-    
-    for i, flag in enumerate(in_drawdown_flags):
-        if flag and (not in_drawdown):
-            # 進入新一段回撤
-            in_drawdown = True
-            start_idx = i
-        elif (not flag) and in_drawdown:
-            # 結束一段回撤
-            in_drawdown = False
-            end_idx = i
-            dd_periods.append(end_idx - start_idx)
-    
-    # 若最後依然在回撤中，且希望計入最後未結束的回撤
+    dd_periods = []
+
+    for i in range(len(cumu_pnl)):
+        if cumu_pnl[i] < cumu_max[i]:
+            # 進入或持續在回撤狀態
+            if not in_drawdown:
+                in_drawdown = True
+                start_idx = i
+        else:
+            # 不在回撤狀態
+            if in_drawdown:
+                # 剛剛結束回撤區間
+                in_drawdown = False
+                dd_periods.append(i - start_idx)
+
+    # 若最後一段回撤尚未結束
     if in_drawdown and include_last_incomplete:
         dd_periods.append(len(cumu_pnl) - start_idx)
-    
-    if len(dd_periods) == 0:
-        return 0.0
-    
-    return float(np.mean(dd_periods))
+
+    return dd_periods
 
 def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_method="NONE", backtest_mode="Trend", annualizer=365, model='zscore', factor='close', interval='1d', plotsr='default'):
     # Preprocess the data if needed
@@ -510,12 +502,14 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     num_trades = np.sum(trades)
     trade_per_interval = num_trades / len(df)
     
-    # Total Drawdown Duration (%)
-    tdd_count = np.sum(drawdown != 0)
-    total_drawdown_duration_pct = (tdd_count / len(drawdown) * 100) if len(drawdown) > 0 else np.nan
-    avg_dd_bar = compute_average_drawdown_duration(cumu_pnl, include_last_incomplete=True)
-
-
+    # Average and MAX Drawdown Duration (Bar)
+    dd_periods = compute_drawdown_durations(cumu_pnl)
+    if (len(dd_periods) > 0):
+        avg_dd_bar = 0.0
+        max_dd_bar = 0.0
+    avg_dd_bar = float(np.mean(dd_periods))
+    max_dd_bar = float(np.max(dd_periods))
+    
     # Equity Curve Slope
     if len(df) > 1:
         x = np.arange(len(df))
@@ -534,6 +528,12 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     # Skewness
     pnl_skewness = skew(pnl, bias=False)
 
+    pnl_kurtosis = kurtosis(pnl, bias=False)
+    if pnl_kurtosis == 0 or np.isnan(pnl_kurtosis):
+        kurtosis_ratio = np.nan
+    else:
+        kurtosis_ratio = pnl_kurtosis
+
     # Sharpe * Calmar
     sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
 
@@ -551,15 +551,16 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
             "TR": float(total_return),
             "SR": float(sharpe_ratio),
             "CR": float(calmar_ratio),
+            "Sortino_Ratio": float(sortino_ratio),
             "sharpe_calmar": float(sharpe_calmar),
             "MDD": float(max_drawdown),
             "AR": float(avg_return),
             "trade_per_interval": float(trade_per_interval),
-            "Total_Drawdown_Duration(%)": float(total_drawdown_duration_pct),
+            "MAX_Drawdown_Duration(bar)": float(max_dd_bar),
             "Average_Drawdown_Duration(bar)": float(avg_dd_bar),
             "Equity_Curve_Slope": float(slope),
-            "Sortino_Ratio": float(sortino_ratio),
-            "skewness": float(pnl_skewness)            
+            "skewness": float(pnl_skewness),
+            "kurtosis": float(pnl_kurtosis)     
         }
     
     return performance_metrics
