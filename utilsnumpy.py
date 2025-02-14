@@ -1,9 +1,9 @@
-import modin.pandas as pd
-import pandas as pdu
+# import modin.pandas as pd
+import pandas as pd
 import numpy as np
 import plotly.express as px
 import matplotlib.pyplot as plt
-from scipy.stats import rankdata
+from scipy.stats import rankdata, boxcox
 import talib
 import math
 from numba import njit
@@ -20,11 +20,11 @@ def load_data(filename1, filename2):
         pd.DataFrame: A cleaned and aligned DataFrame containing data from both sources.
     """
     # Load the data from CSV files
-    df_1 = pdu.read_csv(filename1)
-    df_2 = pdu.read_csv(filename2)
+    df_1 = pd.read_csv(filename1)
+    df_2 = pd.read_csv(filename2)
 
     # Merge the two datasets on the 'start_time' column using asof
-    df = pdu.merge_asof(df_1.sort_values('start_time'), df_2.sort_values('start_time'), on="start_time", direction="nearest")
+    df = pd.merge_asof(df_1.sort_values('start_time'), df_2.sort_values('start_time'), on="start_time", direction="nearest")
 
     # Align the start and end dates
     start_date = max(df_1['start_time'].min(), df_2['start_time'].min())
@@ -115,14 +115,14 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'psy':
         up_days = np.where(np.diff(series, prepend=series.iloc[0]) > 0, 1, 0)
-        df[f'{model}_{factor}'] = (pdu.Series(up_days).rolling(window=rolling_window, min_periods=1).mean() * 100 - 50) / 50 * 3
+        df[f'{model}_{factor}'] = (pd.Series(up_days).rolling(window=rolling_window, min_periods=1).mean() * 100 - 50) / 50 * 3
     
     elif model == 'rvi':
         delta = np.diff(series, prepend=np.nan)
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
-        avg_gain = pdu.Series(gain).rolling(window=rolling_window).mean()
-        avg_loss = pdu.Series(loss).rolling(window=rolling_window).mean()
+        avg_gain = pd.Series(gain).rolling(window=rolling_window).mean()
+        avg_loss = pd.Series(loss).rolling(window=rolling_window).mean()
         rvi = ((avg_gain / (avg_gain + avg_loss + epsilon)) * 100 - 50) / 50 * 3
         df[f'{model}_{factor}'] = rvi
 
@@ -134,7 +134,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         df[f'{model}_{factor}'] = (series - rolling_mean) / (rolling_mad + epsilon)
 
     elif model == 'ma_ratio':
-        ma = pdu.Series(series).rolling(window=rolling_window).mean()
+        ma = pd.Series(series).rolling(window=rolling_window).mean()
         df[f'{model}_{factor}'] = (series / (ma + epsilon)) - 1
 
     return df
@@ -391,6 +391,8 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
         df_transformed[column] = np.power(df_transformed[column], 3)
     elif method == 'cbrt':
         df_transformed[column] = np.cbrt(df_transformed[column])
+    elif method == 'boxcox':
+        df_transformed[column], best_lambda = boxcox(df_transformed[column])
     else:
         raise ValueError(f"Invalid transformation method: {method}")
 
