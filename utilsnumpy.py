@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import matplotlib.pyplot as plt
-from scipy.stats import rankdata, boxcox, skew, kurtosis
+from scipy.stats import rankdata, boxcox, skew, kurtosis, linregress
 import talib
 import math
 from numba import njit, jit
@@ -411,8 +411,7 @@ def compute_drawdown_durations(cumu_pnl: np.ndarray,
 
     參數:
     ----------
-    cumu_pnl : np.ndarray
-        長度 N 的累積盈虧序列 (Equity Curve)。
+    cumu_pnl : np.ndarray, 長度 N 的累積盈虧序列 (Equity Curve)。
     include_last_incomplete : bool
         True 表示將最後未結束的回撤也納入(計算到最後一筆)；
         False 表示只計算已完整回到新高的回撤。
@@ -496,6 +495,8 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
 
     sharpe_ratio = np.nan if pnl_std == 0 or np.isnan(pnl_std) else math.sqrt(annualizer) * pnl_mean / pnl_std
     calmar_ratio = np.nan if max_drawdown == 0 or np.isnan(max_drawdown) else annualizer * pnl_mean / abs(max_drawdown)
+    # Sharpe * Calmar
+    sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
 
     avg_return = pnl_mean * annualizer
     total_return = cumu_pnl[-1]
@@ -534,9 +535,21 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     else:
         kurtosis_ratio = pnl_kurtosis
 
-    # Sharpe * Calmar
-    sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
+    # R-Square
+    x = np.arange(len(cumu_pnl))
+    slpoe, intercept, r_value, p_value, std_err = linregress(x, cumu_pnl)
+    if r_value == 0 or np.isnan(r_value):
+        r_square = np.nan
+    else:
+        r_square = r_value ** 2
 
+    # Tail Ratio
+    tail_ratio = (abs(np.percentile(pnl, 95)) / abs(np.percentile(pnl, 5)))
+
+    # Commission to Profit Ratio
+    commission = fee * num_trades
+    C2P_ratio = commission / total_return
+    
     # Store SR into a dictionary
     performance_metrics = {
             "factor_name": "strategy_0001",
@@ -560,7 +573,10 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
             "Average_Drawdown_Duration(bar)": float(avg_dd_bar),
             "Equity_Curve_Slope": float(slope),
             "skewness": float(pnl_skewness),
-            "kurtosis": float(pnl_kurtosis)     
+            "kurtosis": float(pnl_kurtosis),
+            "R-Square": float(r_square),
+            "Tail_Ratio": float(tail_ratio),
+            "Commission_to_Profit_Ratio": float(C2P_ratio)
         }
     
     return performance_metrics
