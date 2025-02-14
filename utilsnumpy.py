@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import matplotlib.pyplot as plt
-from scipy.stats import rankdata, boxcox
+from scipy.stats import rankdata, boxcox, skew
 import talib
 import math
 from numba import njit
@@ -404,6 +404,60 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
 
     return df_transformed
 
+def compute_average_drawdown_duration(cumu_pnl: np.ndarray, include_last_incomplete: bool = True) -> float:
+    """
+    計算 Average Drawdown Duration (以 bar 為單位)。
+    若最後一次回撤直到資料結束都尚未回到新高，
+    可以依照參數 include_last_incomplete 設定是否納入計算。
+
+    參數:
+    ----------
+    cumu_pnl : np.ndarray
+        長度為 N 的累積盈虧序列 (Equity Curve)。
+    include_last_incomplete : bool
+        True 表示將最後未結束的回撤一併算入(計算到最後一筆)；
+        False 表示只計算已完成回撤(回到當前新高處)的區段。
+
+    回傳:
+    ----------
+    average_dd_duration : float
+        平均回撤時長(單位: bar)，若完全沒有回撤或資料不足，回傳 0.0。
+    """
+    
+    if len(cumu_pnl) < 2:
+        return 0.0
+    
+    # 計算歷史新高序列
+    cumu_max = np.maximum.accumulate(cumu_pnl)
+    
+    # 判定是否在回撤狀態
+    # 只要 cumu_pnl < cumu_max，就算是回撤
+    in_drawdown_flags = (cumu_pnl < cumu_max)
+    
+    dd_periods = []
+    in_drawdown = False
+    start_idx = 0
+    
+    for i, flag in enumerate(in_drawdown_flags):
+        if flag and (not in_drawdown):
+            # 進入新一段回撤
+            in_drawdown = True
+            start_idx = i
+        elif (not flag) and in_drawdown:
+            # 結束一段回撤
+            in_drawdown = False
+            end_idx = i
+            dd_periods.append(end_idx - start_idx)
+    
+    # 若最後依然在回撤中，且希望計入最後未結束的回撤
+    if in_drawdown and include_last_incomplete:
+        dd_periods.append(len(cumu_pnl) - start_idx)
+    
+    if len(dd_periods) == 0:
+        return 0.0
+    
+    return float(np.mean(dd_periods))
+
 def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_method="NONE", backtest_mode="Trend", annualizer=365, model='zscore', factor='close', interval='1d', plotsr='default'):
     # Preprocess the data if needed
     if preprocess_method != "none":
@@ -456,6 +510,33 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     num_trades = np.sum(trades)
     trade_per_interval = num_trades / len(df)
     
+    # Total Drawdown Duration (%)
+    tdd_count = np.sum(drawdown != 0)
+    total_drawdown_duration_pct = (tdd_count / len(drawdown) * 100) if len(drawdown) > 0 else np.nan
+    avg_dd_bar = compute_average_drawdown_duration(cumu_pnl, include_last_incomplete=True)
+
+
+    # Equity Curve Slope
+    if len(df) > 1:
+        x = np.arange(len(df))
+        slope, intercept = np.polyfit(x, cumu_pnl, 1)
+    else:
+        slope = np.nan
+
+    # Sortino Ratio
+    negative_returns = pnl[pnl < 0]
+    downside_deviation = np.std(negative_returns)
+    if downside_deviation == 0 or np.isnan(downside_deviation):
+        sortino_ratio = np.nan
+    else:
+        sortino_ratio = (pnl_mean * annualizer) / (downside_deviation * math.sqrt(annualizer))
+    
+    # Skewness
+    pnl_skewness = skew(pnl, bias=False)
+
+    # Sharpe * Calmar
+    sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
+
     # Store SR into a dictionary
     performance_metrics = {
             "factor_name": "strategy_0001",
@@ -470,9 +551,15 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
             "TR": float(total_return),
             "SR": float(sharpe_ratio),
             "CR": float(calmar_ratio),
+            "sharpe_calmar": float(sharpe_calmar),
             "MDD": float(max_drawdown),
             "AR": float(avg_return),
-            "trade_per_interval": float(trade_per_interval)
+            "trade_per_interval": float(trade_per_interval),
+            "Total_Drawdown_Duration(%)": float(total_drawdown_duration_pct),
+            "Average_Drawdown_Duration(bar)": float(avg_dd_bar),
+            "Equity_Curve_Slope": float(slope),
+            "Sortino_Ratio": float(sortino_ratio),
+            "skewness": float(pnl_skewness)            
         }
     
     return performance_metrics
