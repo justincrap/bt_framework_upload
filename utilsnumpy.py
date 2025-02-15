@@ -498,56 +498,56 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     # Sharpe * Calmar
     sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
 
-    avg_return = pnl_mean * annualizer
-    total_return = cumu_pnl[-1]
+    avg_return = pnl_mean * annualizer if not np.isnan(pnl_mean) else np.nan
+    total_return = cumu_pnl[-1] if len(cumu_pnl) > 0 else 0.0
     num_trades = np.sum(trades)
     trade_per_interval = num_trades / len(df)
     
     # Average and MAX Drawdown Duration (Bar)
     dd_periods = compute_drawdown_durations(cumu_pnl)
-    if (len(dd_periods) > 0):
-        avg_dd_bar = 0.0
-        max_dd_bar = 0.0
-    avg_dd_bar = float(np.mean(dd_periods))
-    max_dd_bar = float(np.max(dd_periods))
+    avg_dd_bar = float(np.mean(dd_periods)) if len(dd_periods) > 0 else 0.0
+    max_dd_bar = float(np.max(dd_periods)) if len(dd_periods) > 0 else 0.0
     
     # Equity Curve Slope
-    if len(df) > 1:
-        x = np.arange(len(df))
-        slope, intercept = np.polyfit(x, cumu_pnl, 1)
+    if len(cumu_pnl) > 1:
+        # Equity Curve Slope
+        x_arr = np.arange(len(cumu_pnl))
+        slope, _ = np.polyfit(x_arr, cumu_pnl, 1)
+
+        # R-Square
+        slope_, intercept_, r_value, p_value, std_err = linregress(np.arange(len(cumu_pnl)), cumu_pnl)
+        r_square = r_value**2 if not np.isnan(r_value) else np.nan
     else:
         slope = np.nan
+        r_square = np.nan
 
     # Sortino Ratio
-    negative_returns = pnl[pnl < 0]
-    downside_deviation = np.std(negative_returns)
-    if downside_deviation == 0 or np.isnan(downside_deviation):
-        sortino_ratio = np.nan
-    else:
+    negative_pnl = pnl[pnl < 0]
+    if len(negative_pnl) > 1:
+        downside_deviation = np.std(negative_pnl) if np.std(negative_pnl) != 0 else np.nan
         sortino_ratio = (pnl_mean * annualizer) / (downside_deviation * math.sqrt(annualizer))
+    else:
+        sortino_ratio = np.nan
     
     # Skewness
-    pnl_skewness = skew(pnl, bias=False)
+    pnl_skewness = skew(pnl, bias=False) if len(pnl) > 1 else np.nan
 
-    pnl_kurtosis = kurtosis(pnl, bias=False)
-    if pnl_kurtosis == 0 or np.isnan(pnl_kurtosis):
-        kurtosis_ratio = np.nan
-    else:
-        kurtosis_ratio = pnl_kurtosis
-
-    # R-Square
-    x = np.arange(len(cumu_pnl))
-    slpoe, intercept, r_value, p_value, std_err = linregress(x, cumu_pnl)
-    if r_value == 0 or np.isnan(r_value):
-        r_square = np.nan
-    else:
-        r_square = r_value ** 2
+    pnl_kurtosis = kurtosis(pnl, bias=False) if len(pnl) > 1 else np.nan
 
     # Tail Ratio
-    tail_ratio = (abs(np.percentile(pnl, 95)) / abs(np.percentile(pnl, 5)))
+    if len(pnl) > 1:
+        p95 = np.percentile(pnl, 95)
+        p5 = np.percentile(pnl, 5)
+        if p5 == 0 or np.isnan(p5) or np.isinf(p5):
+            p5 = np.nan
+        tail_ratio = (abs(p95) / abs(p5))
+    else:
+        tail_ratio = np.nan
 
     # Commission to Profit Ratio
     commission = fee * num_trades
+    if total_return == 0.0:
+        total_return = np.nan
     C2P_ratio = commission / total_return
     
     # Store SR into a dictionary
