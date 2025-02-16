@@ -1,6 +1,7 @@
 # import modin.pandas as pd
 import pandas as pd
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import plotly.express as px
 import matplotlib.pyplot as plt
 from scipy.stats import rankdata, boxcox, skew, kurtosis, linregress
@@ -43,49 +44,60 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     if model == 'zscore':
         if rolling_window != 0:
-            df[f"{model}_{factor}"] = (series - series.rolling(window=rolling_window).mean()) / \
-                                      (series.rolling(window=rolling_window).std(ddof=0) + epsilon)
+            roll = series.rolling(window=rolling_window)
+            roll_mean = roll.mean()
+            roll_std = roll.std(ddof=0)
+            df[f"{model}_{factor}"] = (series - roll_mean) / (roll_std + epsilon)
         else:
             df[f"{model}_{factor}"] = (series - series.mean()) / (series.std() + epsilon)
 
     elif model == 'minmax':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
-            df[f'{model}_{factor}'] = 2 * (series - roll.min()) / (roll.max() - roll.min() + epsilon) - 1
+            roll_min = roll.min()
+            roll_max = roll.max()
+            df[f"{model}_{factor}"] = 2 * (series - roll_min) / (roll_max - roll_min + epsilon) - 1
         else:
-            df[f'{model}_{factor}'] = 2 * (series - series.min()) / (series.max() - series.min() + epsilon) - 1
+            df[f"{model}_{factor}"] = 2 * (series - series.min()) / (series.max() - series.min() + epsilon) - 1
 
     elif model == 'sma_diff':
-        sma = series.rolling(window=rolling_window).mean()
-        df[f'{model}_{factor}'] = (series - sma) / (sma + epsilon)
+        if rolling_window != 0:
+            sma = series.rolling(window=rolling_window).mean()
+        else:
+            sma = series.mean()
+        df[f"{model}_{factor}"] = (series - sma) / (sma + epsilon)
 
     elif model == 'ewm':
         ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
         ewm_std = series.ewm(span=rolling_window, adjust=False).std()
-        df[f'{model}_{factor}'] = (series - ewm_mean) / (ewm_std + epsilon)
+        df[f"{model}_{factor}"] = (series - ewm_mean) / (ewm_std + epsilon)
 
     elif model == 'momentum':
         momentum = series - series.shift(rolling_window)
         log_momentum = np.log10(np.abs(momentum) + 1) * np.sign(momentum)
-        df[f'{model}_{factor}'] = log_momentum - log_momentum.rolling(window=rolling_window).mean()
+        if rolling_window != 0:
+            roll_log_mom = log_momentum.rolling(window=rolling_window)
+            df[f"{model}_{factor}"] = log_momentum - roll_log_mom.mean()
+        else:
+            df[f"{model}_{factor}"] = log_momentum
 
     elif model == 'volatility':
         rolling_std = series.rolling(window=rolling_window).std(ddof=0)
-        df[f'{model}_{factor}'] = (series - series.shift(1)) / (rolling_std + epsilon)
+        df[f"{model}_{factor}"] = (series - series.shift(1)) / (rolling_std + epsilon)
 
     elif model == 'robust':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
             q1 = roll.quantile(0.25)
             q3 = roll.quantile(0.75)
-            median = roll.median()
+            roll_median = roll.median()
             iqr = q3 - q1
+            df[f"{model}_{factor}"] = (series - roll_median) / (iqr + epsilon)
         else:
             q1, q3 = series.quantile([0.25, 0.75])
             median = series.median()
             iqr = q3 - q1
-
-        df[f"{model}_{factor}"] = (series - median) / (iqr + epsilon)
+            df[f"{model}_{factor}"] = (series - median) / (iqr + epsilon)
 
     elif model == 'percentile':
         if rolling_window != 0:
@@ -95,51 +107,82 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'maxabs':
         if rolling_window != 0:
-            roll_max_abs = series.rolling(window=rolling_window).apply(lambda x: np.max(np.abs(x)), raw=True)
-            df[f'{model}_{factor}'] = series / (roll_max_abs + epsilon)
+            # Replace apply(lambda) with vectorized abs().rolling().max()
+            roll_max_abs = series.abs().rolling(window=rolling_window).max()
+            df[f"{model}_{factor}"] = series / (roll_max_abs + epsilon)
         else:
-            df[f'{model}_{factor}'] = series / (series.abs().max() + epsilon)
+            df[f"{model}_{factor}"] = series / (series.abs().max() + epsilon)
 
     elif model == 'mean_norm':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
-            df[f'{model}_{factor}'] = (series - roll.mean()) / (roll.max() - roll.min() + epsilon)
+            roll_mean = roll.mean()
+            roll_min = roll.min()
+            roll_max = roll.max()
+            df[f"{model}_{factor}"] = (series - roll_mean) / (roll_max - roll_min + epsilon)
         else:
-            df[f'{model}_{factor}'] = (series - series.mean()) / (series.max() - series.min() + epsilon)
+            df[f"{model}_{factor}"] = (series - series.mean()) / (series.max() - series.min() + epsilon)
 
     elif model == 'roc':
-        df[f'{model}_{factor}'] = (series - series.shift(rolling_window)) / (series.shift(rolling_window) + epsilon)
+        shifted_series = series.shift(rolling_window)
+        df[f"{model}_{factor}"] = (series - shifted_series) / (shifted_series + epsilon)
 
     elif model == 'rsi':
-        df[f'{model}_{factor}'] = (talib.RSI(series.values, timeperiod=rolling_window) - 50.0) / 50 * 3
+        # talib.RSI returns an array; ensure conversion to Series if needed.
+        rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
+        df[f"{model}_{factor}"] = (rsi_values - 50.0) / 50 * 3
 
     elif model == 'psy':
+        # Compute up_days and use rolling mean
         up_days = np.where(np.diff(series, prepend=series.iloc[0]) > 0, 1, 0)
-        df[f'{model}_{factor}'] = (pd.Series(up_days).rolling(window=rolling_window, min_periods=1).mean() * 100 - 50) / 50 * 3
-    
+        up_days_series = pd.Series(up_days, index=series.index)
+        df[f"{model}_{factor}"] = (up_days_series.rolling(window=rolling_window, min_periods=1)
+                                   .mean() * 100 - 50) / 50 * 3
+
     elif model == 'rvi':
         delta = np.diff(series, prepend=np.nan)
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
-        avg_gain = pd.Series(gain).rolling(window=rolling_window).mean()
-        avg_loss = pd.Series(loss).rolling(window=rolling_window).mean()
+        avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window).mean()
+        avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window).mean()
         rvi = ((avg_gain / (avg_gain + avg_loss + epsilon)) * 100 - 50) / 50 * 3
-        df[f'{model}_{factor}'] = rvi
+        df[f"{model}_{factor}"] = rvi
 
     elif model == 'mad':
-        rolling_mean = series.rolling(window=rolling_window).mean()
-        rolling_mad = series.rolling(window=rolling_window).apply(
-            lambda x: np.mean(np.abs(x - np.mean(x))), raw=True
-        )
-        df[f'{model}_{factor}'] = (series - rolling_mean) / (rolling_mad + epsilon)
+        # Use vectorized computation of rolling mean absolute deviation
+        if rolling_window != 0:
+            # Compute rolling mean using pandas
+            roll_mean = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
+            x = series.values
+            n = len(x)
+            if n >= rolling_window:
+                try:
+                    # Use sliding_window_view if available (NumPy >=1.20)
+                    windows = sliding_window_view(x, window_shape=rolling_window)
+                except ImportError:
+                    # Fallback to a list comprehension if sliding_window_view is not available.
+                    windows = np.array([x[i:i+rolling_window] for i in range(n - rolling_window + 1)])
+                # Compute the mean for each window along axis 1
+                window_means = windows.mean(axis=1, keepdims=True)
+                # Compute the mean absolute deviation for each window
+                mad_values = np.mean(np.abs(windows - window_means), axis=1)
+                # Pad the beginning with NaNs to align with the original series length
+                rolling_mad = np.concatenate((np.full(rolling_window - 1, np.nan), mad_values))
+                df[f"{model}_{factor}"] = (series - roll_mean) / (rolling_mad + epsilon)
+            else:
+                df[f"{model}_{factor}"] = np.nan
+        else:
+            global_mean = series.mean()
+            global_mad = np.mean(np.abs(series - global_mean))
+            df[f"{model}_{factor}"] = (series - global_mean) / (global_mad + epsilon)
 
     elif model == 'ma_ratio':
-        ma = pd.Series(series).rolling(window=rolling_window).mean()
-        df[f'{model}_{factor}'] = (series / (ma + epsilon)) - 1
+        ma = series.rolling(window=rolling_window).mean()
+        df[f"{model}_{factor}"] = (series / (ma + epsilon)) - 1
 
     return df
 
-@njit
+@njit(cache=True)
 def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:float):
     # Position Calculation Part
     position = np.zeros(len(signal))
@@ -404,50 +447,57 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
 
     return df_transformed
 
+# @njit
 def compute_drawdown_durations(cumu_pnl: np.ndarray,
                                include_last_incomplete: bool = True) -> list:
     """
-    回傳所有「完整回撤區間」或包含未完成區間(可設定)的長度(單位: bar)。
-
-    參數:
+    Return the durations (in bars) of drawdown periods from a cumulative PnL curve.
+    
+    Parameters
     ----------
-    cumu_pnl : np.ndarray, 長度 N 的累積盈虧序列 (Equity Curve)。
-    include_last_incomplete : bool
-        True 表示將最後未結束的回撤也納入(計算到最後一筆)；
-        False 表示只計算已完整回到新高的回撤。
-
-    回傳:
-    ----------
+    cumu_pnl : np.ndarray
+        1D array representing the cumulative profit and loss (Equity Curve).
+    include_last_incomplete : bool, optional
+        If True, include the final drawdown period even if it hasn't fully recovered.
+        If False, only complete drawdowns (that end when a new high is reached) are counted.
+    
+    Returns
+    -------
     dd_periods : list
-        每一段回撤期間的長度(單位: bar)。
-        例如 [10, 5, 32] 表示歷史上出現了三次回撤區間，分別長 10、5、32 bar。
+        A list of durations (in bars) for each drawdown period.
+        For example, [10, 5, 32] indicates three drawdown periods lasting 10, 5, and 32 bars respectively.
     """
-    if len(cumu_pnl) < 2:
+    # If the array is too short, return an empty list
+    if cumu_pnl.size < 2:
         return []
 
+    # Compute the cumulative maximum up to each point
     cumu_max = np.maximum.accumulate(cumu_pnl)
-    in_drawdown = False
-    start_idx = 0
-    dd_periods = []
+    # Create a boolean mask where the PnL is below the running max (i.e. in drawdown)
+    mask = cumu_pnl < cumu_max
 
-    for i in range(len(cumu_pnl)):
-        if cumu_pnl[i] < cumu_max[i]:
-            # 進入或持續在回撤狀態
-            if not in_drawdown:
-                in_drawdown = True
-                start_idx = i
-        else:
-            # 不在回撤狀態
-            if in_drawdown:
-                # 剛剛結束回撤區間
-                in_drawdown = False
-                dd_periods.append(i - start_idx)
+    # If there's no drawdown at all, return an empty list
+    if not mask.any():
+        return []
 
-    # 若最後一段回撤尚未結束
-    if in_drawdown and include_last_incomplete:
-        dd_periods.append(len(cumu_pnl) - start_idx)
+    # Pad the mask with False on both sides to capture transitions
+    padded = np.concatenate(([False], mask, [False]))
+    # Compute the difference to find where drawdowns start (False -> True) and end (True -> False)
+    diff = np.diff(padded.astype(np.int8))
+    # Start indices where diff equals 1 (transition from False to True)
+    starts = np.where(diff == 1)[0]
+    # End indices where diff equals -1 (transition from True to False)
+    ends = np.where(diff == -1)[0]
+    
+    # The duration of each drawdown is the difference between the corresponding end and start indices.
+    durations = ends - starts
 
-    return dd_periods
+    # If we do not want to include an incomplete drawdown at the end, remove it if necessary.
+    if not include_last_incomplete and mask[-1]:
+        durations = durations[:-1]
+
+    return durations.tolist()
+
 
 def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_method="NONE", backtest_mode="Trend", annualizer=365, model='zscore', factor='close', interval='1d', plotsr='default'):
     # Preprocess the data if needed
@@ -511,13 +561,21 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     
     # Equity Curve Slope
     if len(cumu_pnl) > 1:
-        # Equity Curve Slope
-        x_arr = np.arange(len(cumu_pnl))
-        slope, _ = np.polyfit(x_arr, cumu_pnl, 1)
+        # Check if cumu_pnl is constant
+        if np.all(cumu_pnl == cumu_pnl[0]):
+            # Entire array is constant → correlation is undefined.
+            slope = np.nan
+            r_square = np.nan
+        else:
+            # Equity Curve Slope
+            x_arr = np.arange(len(cumu_pnl))
+            slope, intercept = np.polyfit(x_arr, cumu_pnl, 1)
 
-        # R-Square
-        slope_, intercept_, r_value, p_value, std_err = linregress(np.arange(len(cumu_pnl)), cumu_pnl)
-        r_square = r_value**2 if not np.isnan(r_value) else np.nan
+            # This will be safe if cumu_pnl is not constant:
+            r_value = np.corrcoef(x_arr, cumu_pnl)[0, 1]
+            r_square = r_value**2 #if not np.isnan(r_value) else np.nan
+            # slope_, intercept_, r_value, p_value, std_err = linregress(np.arange(len(cumu_pnl)), cumu_pnl)
+            # r_square = r_value**2 if not np.isnan(r_value) else np.nan
     else:
         slope = np.nan
         r_square = np.nan
