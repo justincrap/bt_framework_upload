@@ -456,11 +456,12 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
 
     df = model_calculation(df, rolling_window, threshold, model, factor)
     # Copy the zscore_btc column to a new column called signal
-    df.loc[:,'signal'] = df[f"{model}_{factor}"]
-    df.loc[:,'close_ema'] = talib.EMA(df['close'].values, timeperiod=52)
+    df['signal'] = df[f"{model}_{factor}"]
+    
 
     # Position Calculation
     close = df['close'].values
+    df['close_ema'] = talib.EMA(close, timeperiod=52)
     close_ema = df['close_ema'].values
     signal = df['signal'].values
     position = position_calculation(signal, close, close_ema, backtest_mode, threshold)
@@ -569,8 +570,8 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
             "MDD": float(max_drawdown),
             "AR": float(avg_return),
             "trade_per_interval": float(trade_per_interval),
-            "MAX_Drawdown_Duration(bar)": float(max_dd_bar),
-            "Average_Drawdown_Duration(bar)": float(avg_dd_bar),
+            f"MAX_Drawdown_Duration({interval})": float(max_dd_bar),
+            f"Average_Drawdown_Duration({interval})": float(avg_dd_bar),
             "Equity_Curve_Slope": float(slope),
             "skewness": float(pnl_skewness),
             "kurtosis": float(pnl_kurtosis),
