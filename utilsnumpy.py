@@ -38,6 +38,12 @@ def load_data(filename1, filename2):
     df = df.sort_values('start_time').reset_index(drop=True)
     return df
 
+def load_single_data(filename, factor)->pd.DataFrame:
+    df = pd.read_csv(filename)
+    # get only start_time and factor
+    df = df[['start_time', factor]]
+    return df
+
 def model_calculation(df, rolling_window, threshold, model='zscore', factor='close'):
     series = df[factor]  # Keep as pandas Series
     epsilon = 1e-9
@@ -447,7 +453,53 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
 
     return df_transformed
 
-# @njit
+def combine_factors(
+    df: pd.DataFrame,
+    factor1: str,          # 第一個欄位名稱，例如 "zscore_close"
+    factor2: str,          # 第二個欄位名稱，例如 "robust_close"
+    operation: str = "+"
+) -> pd.DataFrame:
+    """
+    Combine two factor columns in df using an arithmetic operation: +, -, *, /.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        包含原始或已做過 model_calculation 後的因子欄位
+    factor1 : str
+        第一個因子欄位名稱
+    factor2 : str
+        第二個因子欄位名稱
+    operation : str, default "+"
+        要做的運算類型，可是 +, -, *, /
+
+    Returns:
+    --------
+    pd.DataFrame
+        傳回同一個 df，但多了一欄新的合成欄位，例如 "factor1+factor2"
+    """
+    if factor1 not in df.columns:
+        raise ValueError(f"{factor1} 不存在於 df 欄位中")
+    if factor2 not in df.columns:
+        raise ValueError(f"{factor2} 不存在於 df 欄位中")
+
+    new_col_name = f"{factor1}{operation}{factor2}"
+
+    if operation == "+":
+        df[new_col_name] = df[factor1] + df[factor2]
+    elif operation == "-":
+        df[new_col_name] = df[factor1] - df[factor2]
+    elif operation == "*":
+        df[new_col_name] = df[factor1] * df[factor2]
+    elif operation == "/":
+        # 注意 0 division，視需求做處理
+        df[new_col_name] = df[factor1] / (df[factor2].replace(0, np.nan))
+    else:
+        raise ValueError(f"不支援的運算: {operation}")
+
+    return df, new_col_name
+
+
 def compute_drawdown_durations(cumu_pnl: np.ndarray,
                                include_last_incomplete: bool = True) -> list:
     """
