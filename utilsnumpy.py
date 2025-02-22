@@ -57,7 +57,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         else:
             df[f"{model}_{factor}"] = (series - series.mean()) / (series.std() + epsilon)
 
-    elif model == 'minmax':
+    elif model == 'minmaxscaling':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
             roll_min = roll.min()
@@ -66,14 +66,14 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         else:
             df[f"{model}_{factor}"] = 2 * (series - series.min()) / (series.max() - series.min() + epsilon) - 1
 
-    elif model == 'sma_diff':
+    elif model == 'smadiffv2':
         if rolling_window != 0:
             sma = series.rolling(window=rolling_window).mean()
         else:
             sma = series.mean()
         df[f"{model}_{factor}"] = (series - sma) / (sma + epsilon)
 
-    elif model == 'ewm':
+    elif model == 'emadiffv2':
         ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
         ewm_std = series.ewm(span=rolling_window, adjust=False).std()
         df[f"{model}_{factor}"] = (series - ewm_mean) / (ewm_std + epsilon)
@@ -91,7 +91,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         rolling_std = series.rolling(window=rolling_window).std(ddof=0)
         df[f"{model}_{factor}"] = (series - series.shift(1)) / (rolling_std + epsilon)
 
-    elif model == 'robust':
+    elif model == 'robustscaler':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
             q1 = roll.quantile(0.25)
@@ -119,7 +119,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         else:
             df[f"{model}_{factor}"] = series / (series.abs().max() + epsilon)
 
-    elif model == 'mean_norm':
+    elif model == 'meannorm':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window)
             roll_mean = roll.mean()
@@ -145,7 +145,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         df[f"{model}_{factor}"] = (up_days_series.rolling(window=rolling_window, min_periods=1)
                                    .mean() * 100 - 50) / 50 * 3
 
-    elif model == 'rvi':
+    elif model == 'srsi':
         delta = np.diff(series, prepend=np.nan)
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
@@ -182,9 +182,78 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             global_mad = np.mean(np.abs(series - global_mean))
             df[f"{model}_{factor}"] = (series - global_mean) / (global_mad + epsilon)
 
-    elif model == 'ma_ratio':
-        ma = series.rolling(window=rolling_window).mean()
-        df[f"{model}_{factor}"] = (series / (ma + epsilon)) - 1
+    # elif model == 'ma_ratio':
+    #     ma = series.rolling(window=rolling_window).mean()
+    #     df[f"{model}_{factor}"] = (series / (ma + epsilon)) - 1
+        
+    elif model == 'quantile':
+        q1 = series.rolling(window=rolling_window).quantile(0.25)
+        q3 = series.rolling(window=rolling_window).quantile(0.75)
+        iqr = q3 - q1
+        df[f"{model}_{factor}"] = (series - q1) / (iqr + epsilon)
+
+    elif model == 'winsorized_zscore':
+        lower_bound = series.quantile(0.05)
+        upper_bound = series.quantile(0.95)
+        winsorized = series.clip(lower=lower_bound, upper=upper_bound)
+        if rolling_window != 0:
+            roll = winsorized.rolling(window=rolling_window, min_periods=1)
+            roll_mean = roll.mean()
+            roll_std = roll.std(ddof=0)
+            df[f"{model}_{factor}"] = (winsorized - roll_mean) / (roll_std + epsilon)
+        else:
+            df[f"{model}_{factor}"] = (winsorized - winsorized.mean()) / (winsorized.std() + epsilon)
+
+    elif model == 'sigmoid':
+        if rolling_window != 0:
+            roll = series.rolling(window=rolling_window, min_periods=1)
+            roll_mean = roll.mean()
+            roll_std = roll.std(ddof=0)
+            df[f"{model}_{factor}"] = 2 / (1 + np.exp(-(series - roll_mean) / (roll_std + epsilon))) - 1
+        else:
+            df[f"{model}_{factor}"] = 2 / (1 + np.exp(-(series - series.mean()) / (series.std() + epsilon))) - 1
+
+    elif model == 'robust_zscore':
+        if rolling_window != 0:
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+            median = roll.median()
+            mad = roll.apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+            df[f"{model}_{factor}"] = 0.6745 * (series - median) / (mad + epsilon)
+        else:
+            median = series.median()
+            mad = np.median(np.abs(series - median))
+            df[f"{model}_{factor}"] = 0.6745 * (series - median) / (mad + epsilon)
+
+    elif model == 'tanh':
+        if rolling_window != 0:
+            roll = series.rolling(window=rolling_window, min_periods=1)
+            median = roll.median()
+            mad = roll.apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+            df[f"{model}_{factor}"] =  (np.tanh((series - median) / (mad + epsilon)) )
+        else:
+            median = series.median()
+            mad = np.median(np.abs(series - median))
+            df[f"{model}_{factor}"] = (np.tanh((series - median) / (mad + epsilon)) )
+
+    elif model == 'slope':
+        arr = series.values
+        n = len(arr)
+        if n < rolling_window:
+            slopes = np.full(n, np.nan)
+        else:
+
+            windows = np.lib.stride_tricks.sliding_window_view(arr, window_shape=rolling_window)
+
+            x = np.arange(rolling_window)
+            x_mean = np.mean(x)
+            denominator = np.sum((x - x_mean)**2) + epsilon        
+            window_means = np.mean(windows, axis=1)
+            slopes_vec = np.sum((x - x_mean) * (windows - window_means[:, None]), axis=1) / denominator            
+            constant_mask = np.all(np.abs(windows - windows[:, 0][:, None]) < 1e-12, axis=1)
+            slopes_vec[constant_mask] = 0
+            
+            slopes = np.concatenate((np.full(rolling_window - 1, np.nan), slopes_vec))
+        df[f"{model}_{factor}"] = slopes
 
     return df
 
@@ -193,7 +262,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
     # Position Calculation Part
     position = np.zeros(len(signal))
 
-    if backtest_mode == "Trend":
+    if backtest_mode == "trend":
         # Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -202,7 +271,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "Trend_Reverse":
+    elif backtest_mode == "trend_reverse":
         # Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -211,7 +280,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 1
             else:   # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "MR":
+    elif backtest_mode == "mr":
         # Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -223,7 +292,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "MR_Reverse":
+    elif backtest_mode == "mr_reverse":
         # Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go short
@@ -235,7 +304,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "Trend_NoHold":
+    elif backtest_mode == "fast":
         # Trend position Entry, Exit at Opposite Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -244,7 +313,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "Trend_emaFilter":
+    elif backtest_mode == "trend_emaFilter":
         # Trend position Entry, EMA filter input
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] >= close_ema[i]:
@@ -253,7 +322,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:   # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "Trend_NoHold_emaFilter":
+    elif backtest_mode == "fast_emaFilter":
         # Trend position Entry, Exit at Opposite Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] >= close_ema[i]:
@@ -262,7 +331,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "L_Trend":
+    elif backtest_mode == "trend_long":
         # Long-Only Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -271,7 +340,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "S_Trend":
+    elif backtest_mode == "trend_short":
         # Short-Only Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -280,7 +349,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "L_Trend_Reverse":
+    elif backtest_mode == "trend_reverse_long":
         # Long-Only Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -289,7 +358,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "S_Trend_Reverse":
+    elif backtest_mode == "trend_reverse_short":
         # Short-Only Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -298,7 +367,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "L_MR":
+    elif backtest_mode == "mr_long":
         # Long-Only Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -310,7 +379,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "S_MR":
+    elif backtest_mode == "mr_short":
         # Short-Only Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Position
@@ -322,7 +391,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "L_MR_Reverse":
+    elif backtest_mode == "mr_reverse_long":
         # Long-Only Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Short(Long Only)
@@ -334,7 +403,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "S_MR_Reverse":
+    elif backtest_mode == "mr_reverse_short":
         # Short-Only Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go Short
@@ -346,7 +415,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Carry forward the previous position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "L_Trend_NoHold":
+    elif backtest_mode == "fast_long":
         # Long-Only Trend position Entry, Exit at Opposite Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -355,7 +424,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "S_Trend_NoHold":
+    elif backtest_mode == "fast_short":
         # Short-Only Trend position Entry, Exit at Opposite Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Long(Short Only)
@@ -364,7 +433,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "L_Trend_emaFilter":
+    elif backtest_mode == "trend_long_emaFilter":
         # Long-Only Trend position Entry, EMA filter input
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] >= close_ema[i]:
@@ -373,7 +442,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:   # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "S_Trend_emaFilter":
+    elif backtest_mode == "trend_short_emaFilter":
         # Short-Only Trend position Entry, EMA filter input
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] <= close_ema[i]:
@@ -382,7 +451,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:   # Hold Position
                 position[i] = position[i-1]
-    elif backtest_mode == "L_Trend_NoHold_emaFilter":
+    elif backtest_mode == "fast_long_emaFilter":
         # Long-Only Trend position Entry, Exit at Opposite Threshold, EMA filter input
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] >= close_ema[i]:
@@ -391,7 +460,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:   # Do Not Hold
                 position[i] = 0
-    elif backtest_mode == "S_Trend_NoHold_emaFilter":
+    elif backtest_mode == "fast_short_emaFilter":
         # Short-Only Trend position Entry, Exit at Opposite Threshold, EMA filter input
         for i in range(len(signal)):
             if signal[i] >= threshold and close[i] <= close_ema[i]:
@@ -428,7 +497,9 @@ def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'def
     # Apply transformations
     if method == 'log':
         df_transformed[column] = np.log(df_transformed[column].replace(0, np.nan))
-    elif method == 'pctChange':
+    elif method == 'log10':
+        df_transformed[column] = np.log10(df_transformed[column].replace(0, np.nan))
+    elif method == 'pct_chg':
         df_transformed[column] = df_transformed[column].pct_change()
     elif method == 'diff':
         df_transformed[column] = df_transformed[column].diff()
@@ -553,7 +624,7 @@ def compute_drawdown_durations(cumu_pnl: np.ndarray,
 
 def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_method="NONE", backtest_mode="Trend", annualizer=365, model='zscore', factor='close', interval='1d', plotsr='default'):
     # Preprocess the data if needed
-    if preprocess_method != "none":
+    if preprocess_method != "direct":
         df = data_processing(df, preprocess_method, factor, plotsr)
 
     df = model_calculation(df, rolling_window, threshold, model, factor)
@@ -663,7 +734,7 @@ def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_me
     
     # Store SR into a dictionary
     performance_metrics = {
-            "factor_name": "strategy_0001",
+            "factor_name": factor,
             "Data_Preprocess": preprocess_method,
             "backtest_mode": backtest_mode,
             "fees": fee,
