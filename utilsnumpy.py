@@ -215,10 +215,13 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'robust_zscore':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
-            median = roll.median()
-            mad = roll.apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
-            df[f"{model}_{factor}"] = 0.6745 * (series - median) / (mad + epsilon)
+            # 1. Rolling median
+            rolling_median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+            # 2. Rolling MAD (median absolute deviation)
+            abs_dev = (series - rolling_median).abs()
+            rolling_mad = abs_dev.rolling(window=rolling_window, min_periods=rolling_window).median()
+            
+            df[f"{model}_{factor}"] = 0.6745 * (series - rolling_median) / (rolling_mad + epsilon)
         else:
             median = series.median()
             mad = np.median(np.abs(series - median))
@@ -226,14 +229,17 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'tanh':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=1)
-            median = roll.median()
-            mad = roll.apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
-            df[f"{model}_{factor}"] =  (np.tanh((series - median) / (mad + epsilon)) )
+            # 1. Rolling median
+            rolling_median = series.rolling(window=rolling_window, min_periods=1).median()
+            # 2. Rolling MAD
+            abs_dev = (series - rolling_median).abs()
+            rolling_mad = abs_dev.rolling(window=rolling_window, min_periods=1).median()
+            
+            df[f"{model}_{factor}"] = np.tanh((series - rolling_median) / (rolling_mad + epsilon))
         else:
             median = series.median()
             mad = np.median(np.abs(series - median))
-            df[f"{model}_{factor}"] = (np.tanh((series - median) / (mad + epsilon)) )
+            df[f"{model}_{factor}"] = np.tanh((series - median) / (mad + epsilon))
 
     elif model == 'slope':
         arr = series.values
@@ -557,14 +563,14 @@ def combine_factors(
     new_col_name = f"{factor1}{operation}{factor2}"
 
     if operation == "+":
-        df[new_col_name] = df[factor1] + df[factor2]
+        df[new_col_name] = (df[factor1] + df[factor2]).astype(np.float64)  # 強制轉換為 float64
     elif operation == "-":
-        df[new_col_name] = df[factor1] - df[factor2]
+        df[new_col_name] = (df[factor1] - df[factor2]).astype(np.float64)  # 強制轉換為 float64
     elif operation == "*":
-        df[new_col_name] = df[factor1] * df[factor2]
+        df[new_col_name] = (df[factor1] * df[factor2]).astype(np.float64)  # 強制轉換為 float64
     elif operation == "/":
         # 注意 0 division，視需求做處理
-        df[new_col_name] = df[factor1] / (df[factor2].replace(0, np.nan))
+        df[new_col_name] = (df[factor1] / (df[factor2].replace(0, np.nan))).astype(np.float64)  # 強制轉換為 float64
     else:
         raise ValueError(f"不支援的運算: {operation}")
 
