@@ -50,7 +50,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     if model == 'zscore':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window)
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_std = roll.std(ddof=0)
             df[f"{model}_{factor}"] = (series - roll_mean) / (roll_std + epsilon)
@@ -59,7 +59,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'minmaxscaling':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window)
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_min = roll.min()
             roll_max = roll.max()
             df[f"{model}_{factor}"] = 2 * (series - roll_min) / (roll_max - roll_min + epsilon) - 1
@@ -68,14 +68,14 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'smadiffv2':
         if rolling_window != 0:
-            sma = series.rolling(window=rolling_window).mean()
+            sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
         else:
             sma = series.mean()
         df[f"{model}_{factor}"] = (series - sma) / (sma + epsilon)
 
-    elif model == 'emadiffv2':
-        ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
-        ewm_std = series.ewm(span=rolling_window, adjust=False).std()
+    elif model == 'ezscore':
+        ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        ewm_std = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).std()
         df[f"{model}_{factor}"] = (series - ewm_mean) / (ewm_std + epsilon)
 
     elif model == 'momentum':
@@ -88,12 +88,12 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             df[f"{model}_{factor}"] = log_momentum
 
     elif model == 'volatility':
-        rolling_std = series.rolling(window=rolling_window).std(ddof=0)
+        rolling_std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
         df[f"{model}_{factor}"] = (series - series.shift(1)) / (rolling_std + epsilon)
 
     elif model == 'robustscaler':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window)
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             q1 = roll.quantile(0.25)
             q3 = roll.quantile(0.75)
             roll_median = roll.median()
@@ -107,21 +107,21 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'percentile':
         if rolling_window != 0:
-            df[f"{model}_{factor}"] = series.rolling(window=rolling_window).rank(pct=True) * 2 - 1
+            df[f"{model}_{factor}"] = series.rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
         else:
             df[f"{model}_{factor}"] = 2 * (rankdata(series) / len(series)) - 1
 
     elif model == 'maxabs':
         if rolling_window != 0:
             # Replace apply(lambda) with vectorized abs().rolling().max()
-            roll_max_abs = series.abs().rolling(window=rolling_window).max()
+            roll_max_abs = series.abs().rolling(window=rolling_window, min_periods=rolling_window).max()
             df[f"{model}_{factor}"] = series / (roll_max_abs + epsilon)
         else:
             df[f"{model}_{factor}"] = series / (series.abs().max() + epsilon)
 
     elif model == 'meannorm':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window)
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_min = roll.min()
             roll_max = roll.max()
@@ -187,8 +187,8 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
     #     df[f"{model}_{factor}"] = (series / (ma + epsilon)) - 1
         
     elif model == 'quantile':
-        q1 = series.rolling(window=rolling_window).quantile(0.25)
-        q3 = series.rolling(window=rolling_window).quantile(0.75)
+        q1 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
+        q3 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
         iqr = q3 - q1
         df[f"{model}_{factor}"] = (series - q1) / (iqr + epsilon)
 
@@ -197,7 +197,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
         upper_bound = series.quantile(0.95)
         winsorized = series.clip(lower=lower_bound, upper=upper_bound)
         if rolling_window != 0:
-            roll = winsorized.rolling(window=rolling_window, min_periods=1)
+            roll = winsorized.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_std = roll.std(ddof=0)
             df[f"{model}_{factor}"] = (winsorized - roll_mean) / (roll_std + epsilon)
@@ -206,7 +206,7 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'sigmoid':
         if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=1)
+            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_std = roll.std(ddof=0)
             df[f"{model}_{factor}"] = 2 / (1 + np.exp(-(series - roll_mean) / (roll_std + epsilon))) - 1
@@ -215,13 +215,23 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'robust_zscore':
         if rolling_window != 0:
-            # 1. Rolling median
-            rolling_median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
-            # 2. Rolling MAD (median absolute deviation)
-            abs_dev = (series - rolling_median).abs()
-            rolling_mad = abs_dev.rolling(window=rolling_window, min_periods=rolling_window).median()
+            arr = series.values.astype(np.float64)
+            n = len(arr)
+            medians = np.empty(n)
+            mads = np.empty(n)
+            # 處理初始不足 window 長度的部分
+            for i in range(rolling_window - 1):
+                win = arr[:i+1]
+                medians[i] = np.median(win)
+                mads[i] = np.median(np.abs(win - medians[i]))
+            # 使用 sliding window trick 處理充足長度的部分
+            shape = (n - rolling_window + 1, rolling_window)
+            strides = (arr.strides[0], arr.strides[0])
+            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+            medians[rolling_window - 1:] = np.median(windows, axis=1)
+            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
             
-            df[f"{model}_{factor}"] = 0.6745 * (series - rolling_median) / (rolling_mad + epsilon)
+            df[f"{model}_{factor}"] = 0.6745 * (series - medians) / (mads + epsilon)
         else:
             median = series.median()
             mad = np.median(np.abs(series - median))
@@ -229,13 +239,23 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
 
     elif model == 'tanh':
         if rolling_window != 0:
-            # 1. Rolling median
-            rolling_median = series.rolling(window=rolling_window, min_periods=1).median()
-            # 2. Rolling MAD
-            abs_dev = (series - rolling_median).abs()
-            rolling_mad = abs_dev.rolling(window=rolling_window, min_periods=1).median()
+            arr = series.values.astype(np.float64)
+            n = len(arr)
+            medians = np.empty(n)
+            mads = np.empty(n)
+            # 處理初始不足 window 長度的部分
+            for i in range(rolling_window - 1):
+                win = arr[:i+1]
+                medians[i] = np.median(win)
+                mads[i] = np.median(np.abs(win - medians[i]))
+            # 使用 sliding window trick 處理充足長度的部分
+            shape = (n - rolling_window + 1, rolling_window)
+            strides = (arr.strides[0], arr.strides[0])
+            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+            medians[rolling_window - 1:] = np.median(windows, axis=1)
+            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
             
-            df[f"{model}_{factor}"] = np.tanh((series - rolling_median) / (rolling_mad + epsilon))
+            df[f"{model}_{factor}"] = np.tanh((series - medians) / (mads + epsilon))
         else:
             median = series.median()
             mad = np.median(np.abs(series - median))
@@ -260,6 +280,41 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             
             slopes = np.concatenate((np.full(rolling_window - 1, np.nan), slopes_vec))
         df[f"{model}_{factor}"] = slopes
+
+    elif model == 'roc_zscore':
+        # Step 1: Compute ROC
+        shifted_series = series.shift(rolling_window)
+        roc_series = (series - shifted_series) / (shifted_series + epsilon)
+        
+        # Step 2: Apply Z-Score normalization on ROC
+        if rolling_window != 0:
+            roll = roc_series.rolling(window=rolling_window, min_periods=rolling_window)
+            roll_mean = roll.mean()
+            roll_std = roll.std(ddof=0)
+            df[f"{model}_{factor}"] = (roc_series - roll_mean) / (roll_std + epsilon)
+        else:
+            df[f"{model}_{factor}"] = (roc_series - roc_series.mean()) / (roc_series.std() + epsilon)
+    
+    elif model == 'madzscore':
+        median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+        median_std = series.rolling(window=rolling_window, min_periods=rolling_window).std()
+        df[f"{model}_{factor}"] = (series - median) / (median_std + epsilon)
+        
+    elif model == 'emadiffv2':
+        if rolling_window != 0:
+            ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
+            result = (series - ewm_mean) / (ewm_mean + epsilon)
+        else:
+            result = (series - np.mean(series)) / (np.mean(series) + epsilon)
+        df[f"{model}_{factor}"] = result
+    
+    elif model == 'mediandiffv2':
+        if rolling_window != 0:
+            median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+            result = (series - median) / (median + epsilon)
+        else:
+            result = (series - np.median(series)) / (np.median(series) + epsilon)
+        df[f"{model}_{factor}"] = result
 
     return df
 
