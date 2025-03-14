@@ -1,4 +1,3 @@
-# import modin.pandas as pd
 import pandas as pd
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
@@ -6,260 +5,440 @@ import plotly.express as px
 import matplotlib.pyplot as plt
 from scipy.stats import rankdata, boxcox, skew, kurtosis, linregress
 import talib
+import pandas_ta
 import math
 from numba import njit, jit
-
-def load_data(filename1, filename2):
-    """
-    Load and merge two datasets based on start_time and align their start and end dates.
-
-    Parameters:
-        filename1 (str): Path to the first dataset (e.g., data source 1).
-        filename2 (str): Path to the second dataset (e.g., data source 2).
-
-    Returns:
-        pd.DataFrame: A cleaned and aligned DataFrame containing data from both sources.
-    """
-    # Load the data from CSV files
-    df_1 = pd.read_csv(filename1)
-    df_2 = pd.read_csv(filename2)
-
-    # Merge the two datasets on the 'start_time' column using asof
-    df = pd.merge_asof(df_1.sort_values('start_time'), df_2.sort_values('start_time'), on="start_time", direction="nearest")
-
-    # Align the start and end dates
-    start_date = max(df_1['start_time'].min(), df_2['start_time'].min())
-    end_date = min(df_1['start_time'].max(), df_2['start_time'].max())
-
-    # Filter the merged data to ensure alignment
-    df = df[(df['start_time'] >= start_date) & (df['start_time'] <= end_date)]
-
-    # Ensure data is in ascending order
-    df = df.sort_values('start_time').reset_index(drop=True)
-    return df
+import config as c
+import sys
 
 def load_single_data(filename, factor)->pd.DataFrame:
     df = pd.read_csv(filename)
     # get only start_time and factor
     df = df[['start_time', factor]]
+    # df['Time'] = pd.to_datetime(df['start_time'], unit='ms')
+    # put the data in this order df['Time', 'start_time', factor]
+    df = df[['start_time', factor]]
+    # Check duplicate and remove duplicate
+    df = df.drop_duplicates(subset=['start_time'], keep='first')
+    df = df.sort_values('start_time')
+    df = df.reset_index(drop=True)
     return df
 
-def model_calculation(df, rolling_window, threshold, model='zscore', factor='close'):
-    series = df[factor]  # Keep as pandas Series
-    epsilon = 1e-9
+def chop_data(df, start, end):
+    modified_data = df[df['start_time'] >= start]
+    finalized_data = modified_data[modified_data['start_time'] <= end]
+
+    return finalized_data
+
+def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
+    # Load data and factor
+    candle_data = load_single_data(candle_file, 'Close')
+    factor_data = load_single_data(factor_file, factor)
+    factor2_data = None
+
+    if c.operation != 'none':
+        factor2_data = load_single_data(factor2_file, factor2)
+        factor2_nan = nan_count(factor2_data[factor2])
+        factor2_nan_percent = factor2_nan / len(factor2_data[factor2])
+        if factor2_nan_percent > 0.03:
+            print(f"{c.factor2} NaN percentage: {factor2_nan:.3f}, skipping backtest.")
+            # End the backtest directly
+            sys.exit()  # 直接結束當前 Jupyter cell # 如果之後要修改做 Hopeless的python版本要修改一下
+        else:
+            print(f"{c.factor2} NaN percentage: {factor2_nan:.3f}, preceed with backtest.")
+
+    factor_nan = nan_count(factor_data[factor])
+    factor_nan_percent = factor_nan / len(factor_data[factor])
+    if factor_nan_percent > 0.03:
+        print(f"{c.factor} NaN percentage: {factor_nan_percent:.3f}, skipping backtest.")
+        # End the backtest directly
+    else:
+        print(f"{c.factor} NaN percentage: {factor_nan_percent:.3f}, proceeding with backtest.")
+
+    if factor2_data is not None:
+        min_date = max(candle_data['start_time'].min(), factor_data['start_time'].min(), factor2_data['start_time'].min())
+        max_date = min(candle_data['start_time'].max(), factor_data['start_time'].max(), factor2_data['start_time'].max())
+        chopped_factor2_data = chop_data(factor2_data, min_date, max_date).reset_index(drop=True)
+        
+    else:
+        min_date = max(candle_data['start_time'].min(), factor_data['start_time'].min())
+        max_date = min(candle_data['start_time'].max(), factor_data['start_time'].max())
+
+    chopped_candle_data = chop_data(candle_data, min_date, max_date).reset_index(drop=True)
+    chopped_factor_data = chop_data(factor_data, min_date, max_date).reset_index(drop=True)
+
+    # merge factor_df and factor2_df, dropna at last
+    if factor2_data is not None:
+        merged_factor_data = pd.merge_asof(chopped_factor_data, chopped_factor2_data, direction='nearest', on='start_time')
+        dropped_merged_factor_data = merged_factor_data.dropna()
+        return chopped_candle_data, dropped_merged_factor_data
+    else:
+        chopped_factor_data = chopped_factor_data.dropna()
+        return chopped_candle_data, chopped_factor_data
+
+def nan_count(series):
+    # Check if series have more then 3% NaN values
+    nan_count = series.isna().sum()
+    return nan_count
+
+def combines_data(series1: np.ndarray, series2: np.ndarray, operation, factor1, factor2):
+    if operation == '+':
+        return series1 + series2, f"{factor1}{operation}{factor2}"
+    elif operation == '-':
+        return series1 - series2, f"{factor1}{operation}{factor2}"
+    elif operation == '*':
+        return series1 * series2, f"{factor1}{operation}{factor2}"
+    elif operation == '/':
+        return series1 / series2, f"{factor1}{operation}{factor2}"
+    else:
+        raise ValueError(f"不支援的運算: {operation}")
+    
+def data_processing(series, method, factor):
+    # 開始轉換
+    if method == 'log':
+        series = np.log(series) # series.replace(0, np.nan) OLD!!
+    elif method == 'log10':
+        series = np.log10(series)
+    elif method == 'pct_chg':
+        series = series.pct_change()
+    elif method == 'diff':
+        series = series.diff()
+    elif method == 'square':
+        series = np.square(series)
+    elif method == 'sqrt':
+        series = np.sqrt(series)
+    elif method == 'cube':
+        series = np.power(series, 3)
+    elif method == 'cbrt':
+        series = np.cbrt(series)
+    elif method == 'boxcox':
+        series, best_lambda = boxcox(series)
+    else:
+        raise ValueError(f"Invalid transformation method: {method}")
+    
+    return series
+
+def precompute_rolling_stats(series: pd.Series, windows: list) -> dict:
+    """
+    預先計算給定 series 在不同 rolling window 下的 mean 與 std，
+    並存入字典以便後續查詢。
+    
+    Parameters:
+        series (pd.Series): 要計算 rolling 指標的數據序列。
+        windows (list): 各個 rolling window 的大小，例如 [5, 10, 20, 50, 100]。
+    
+    Returns:
+        dict: { window_size: {'mean': np.array, 'std': np.array} }
+    """
+    rolling_stats = {}
+    # 將 series 轉換為 numpy array
+    arr = series.values.astype(np.float64)
+    n = len(arr)
+
+    for window in windows:
+        if window > n:
+            continue
+        
+        roll = series.rolling(window=window, min_periods=window)
+        roll_mean = roll.mean().values
+        roll_std = roll.std(ddof=0).values
+        roll_min = roll.min().values
+        roll_max = roll.max().values
+        roll_q1 = roll.quantile(0.25).values
+        roll_q3 = roll.quantile(0.75).values
+        rolling_stats[window] = {'roll_mean': roll_mean, 'roll_std': roll_std, 'roll_min': roll_min, 'roll_max': roll_max, 'roll_q1': roll_q1, 'roll_q3': roll_q3}
+
+    return rolling_stats
+
+def model_calculation_cached(series, rolling_window, model='zscore', factor=None, rolling_stats=None): 
+    epsilon = 0
 
     if model == 'zscore':
-        if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
-            roll_mean = roll.mean()
-            roll_std = roll.std(ddof=0)
-            df[f"{model}_{factor}"] = (series - roll_mean) / (roll_std + epsilon)
-        else:
-            df[f"{model}_{factor}"] = (series - series.mean()) / (series.std() + epsilon)
+        roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+        roll_mean = roll.mean()
+        roll_std = roll.std(ddof=0)
+        result = (series - roll_mean) / roll_std
+
+    elif model == 'ezscore':
+        ewm_mean = series.ewm(span=rolling_window,min_periods=rolling_window, adjust=False).mean()
+        std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (series - ewm_mean) / std
+
+    elif model == 'ezscorev1':
+        ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        ewm_std = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).std()
+        result = (series - ewm_mean) / ewm_std
+
+    elif model == 'madzscore':
+        median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+        deviation = abs(series - median)
+        mad = deviation.rolling(window=rolling_window, min_periods=rolling_window).median()
+        result = 0.6745 * (series - median) / mad
+
+    elif model == 'robustscaler':
+        roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+        q1 = roll.quantile(0.25)
+        q3 = roll.quantile(0.75)
+        roll_median = roll.median()
+        iqr = q3 - q1
+        result = (series - roll_median) / (iqr + epsilon)
 
     elif model == 'minmaxscaling':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_min = roll.min()
             roll_max = roll.max()
-            df[f"{model}_{factor}"] = 2 * (series - roll_min) / (roll_max - roll_min + epsilon) - 1
+            result = 2 * (series - roll_min) / (roll_max - roll_min + epsilon) - 1
         else:
-            df[f"{model}_{factor}"] = 2 * (series - series.min()) / (series.max() - series.min() + epsilon) - 1
-
-    elif model == 'smadiffv2':
-        if rolling_window != 0:
-            sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
-        else:
-            sma = series.mean()
-        df[f"{model}_{factor}"] = (series - sma) / (sma + epsilon)
-
-    elif model == 'ezscore':
-        ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        ewm_std = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).std()
-        df[f"{model}_{factor}"] = (series - ewm_mean) / (ewm_std + epsilon)
-
-    elif model == 'momentum':
-        momentum = series - series.shift(rolling_window)
-        log_momentum = np.log10(np.abs(momentum) + 1) * np.sign(momentum)
-        if rolling_window != 0:
-            roll_log_mom = log_momentum.rolling(window=rolling_window)
-            df[f"{model}_{factor}"] = log_momentum - roll_log_mom.mean()
-        else:
-            df[f"{model}_{factor}"] = log_momentum
-
-    elif model == 'volatility':
-        rolling_std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
-        df[f"{model}_{factor}"] = (series - series.shift(1)) / (rolling_std + epsilon)
-
-    elif model == 'robustscaler':
-        if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
-            q1 = roll.quantile(0.25)
-            q3 = roll.quantile(0.75)
-            roll_median = roll.median()
-            iqr = q3 - q1
-            df[f"{model}_{factor}"] = (series - roll_median) / (iqr + epsilon)
-        else:
-            q1, q3 = series.quantile([0.25, 0.75])
-            median = series.median()
-            iqr = q3 - q1
-            df[f"{model}_{factor}"] = (series - median) / (iqr + epsilon)
-
-    elif model == 'percentile':
-        if rolling_window != 0:
-            df[f"{model}_{factor}"] = series.rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
-        else:
-            df[f"{model}_{factor}"] = 2 * (rankdata(series) / len(series)) - 1
-
-    elif model == 'maxabs':
-        if rolling_window != 0:
-            # Replace apply(lambda) with vectorized abs().rolling().max()
-            roll_max_abs = series.abs().rolling(window=rolling_window, min_periods=rolling_window).max()
-            df[f"{model}_{factor}"] = series / (roll_max_abs + epsilon)
-        else:
-            df[f"{model}_{factor}"] = series / (series.abs().max() + epsilon)
+            result = 2 * (series - series.min()) / (series.max() - series.min()) - 1
 
     elif model == 'meannorm':
-        if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
-            roll_mean = roll.mean()
-            roll_min = roll.min()
-            roll_max = roll.max()
-            df[f"{model}_{factor}"] = (series - roll_mean) / (roll_max - roll_min + epsilon)
+        roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+        roll_mean = roll.mean()
+        roll_min = roll.min()
+        roll_max = roll.max()
+        result = (series - roll_mean) / (roll_max - roll_min)
+
+    elif model == 'maxabs':
+        roll_max_abs = series.abs().rolling(window=rolling_window, min_periods=rolling_window).max()
+        result = series / roll_max_abs
+
+    elif model == 'smadiffv2_noabs':
+        sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
+        result = (series - sma) / sma
+
+    elif model == 'smadiffv2':
+        sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
+        result = (series - sma) / sma.abs()
+
+    elif model == 'emadiffv2_noabs':
+        ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        result = (series - ewm_mean) / ewm_mean
+
+    elif model == 'emadiffv2':
+        ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        result = (series - ewm_mean) / ewm_mean.abs()
+
+    elif model == 'mediandiffv2_noabs':
+        median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+        result = (series - median) / median
+
+    elif model == 'mediandiffv2':
+        median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
+        result = (series - median) / median.abs()
+
+    elif model == 'mad':
+        # Use vectorized computation of rolling mean absolute deviation
+        # Compute rolling mean using pandas
+        roll_mean = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
+        x = series.values
+        n = len(x)
+        if n >= rolling_window:
+            try:
+                # Use sliding_window_view if available (NumPy >=1.20)
+                windows = sliding_window_view(x, window_shape=rolling_window)
+            except ImportError:
+                # Fallback to a list comprehension if sliding_window_view is not available.
+                windows = np.array([x[i:i+rolling_window] for i in range(n - rolling_window + 1)])
+            # Compute the mean for each window along axis 1
+            window_means = windows.mean(axis=1, keepdims=True)
+            # Compute the mean absolute deviation for each window
+            mad_values = np.mean(np.abs(windows - window_means), axis=1)
+            # Pad the beginning with NaNs to align with the original series length
+            rolling_mad = np.concatenate((np.full(rolling_window - 1, np.nan), mad_values))
+            result = (series - roll_mean) / (rolling_mad + epsilon)
         else:
-            df[f"{model}_{factor}"] = (series - series.mean()) / (series.max() - series.min() + epsilon)
-
-    elif model == 'roc':
-        shifted_series = series.shift(rolling_window)
-        df[f"{model}_{factor}"] = (series - shifted_series) / (shifted_series + epsilon)
-
-    elif model == 'rsi':
-        # talib.RSI returns an array; ensure conversion to Series if needed.
-        rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
-        df[f"{model}_{factor}"] = (rsi_values - 50.0) / 50 * 3
-
-    elif model == 'psy':
-        # Compute up_days and use rolling mean
-        up_days = np.where(np.diff(series, prepend=series.iloc[0]) > 0, 1, 0)
-        up_days_series = pd.Series(up_days, index=series.index)
-        df[f"{model}_{factor}"] = (up_days_series.rolling(window=rolling_window, min_periods=1)
-                                   .mean() * 100 - 50) / 50 * 3
+            result = np.nan
 
     elif model == 'srsi':
         delta = np.diff(series, prepend=np.nan)
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
-        avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window).mean()
-        avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window).mean()
-        rvi = ((avg_gain / (avg_gain + avg_loss + epsilon)) * 100 - 50) / 50 * 3
-        df[f"{model}_{factor}"] = rvi
+        avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        rs = avg_gain - avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        result = (rsi / 100 * 6) - 3
 
-    elif model == 'mad':
-        # Use vectorized computation of rolling mean absolute deviation
-        if rolling_window != 0:
-            # Compute rolling mean using pandas
-            roll_mean = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
-            x = series.values
-            n = len(x)
-            if n >= rolling_window:
-                try:
-                    # Use sliding_window_view if available (NumPy >=1.20)
-                    windows = sliding_window_view(x, window_shape=rolling_window)
-                except ImportError:
-                    # Fallback to a list comprehension if sliding_window_view is not available.
-                    windows = np.array([x[i:i+rolling_window] for i in range(n - rolling_window + 1)])
-                # Compute the mean for each window along axis 1
-                window_means = windows.mean(axis=1, keepdims=True)
-                # Compute the mean absolute deviation for each window
-                mad_values = np.mean(np.abs(windows - window_means), axis=1)
-                # Pad the beginning with NaNs to align with the original series length
-                rolling_mad = np.concatenate((np.full(rolling_window - 1, np.nan), mad_values))
-                df[f"{model}_{factor}"] = (series - roll_mean) / (rolling_mad + epsilon)
-            else:
-                df[f"{model}_{factor}"] = np.nan
-        else:
-            global_mean = series.mean()
-            global_mad = np.mean(np.abs(series - global_mean))
-            df[f"{model}_{factor}"] = (series - global_mean) / (global_mad + epsilon)
+    elif model == 'ersi':
+        delta = np.diff(series, prepend=np.nan)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        avg_loss = pd.Series(loss, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        rs = avg_gain - avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        result = (rsi / 100 * 6) - 3
 
-    # elif model == 'ma_ratio':
-    #     ma = series.rolling(window=rolling_window).mean()
-    #     df[f"{model}_{factor}"] = (series / (ma + epsilon)) - 1
-        
+    elif model == 'srsiv2':
+        delta = series.pct_change()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        rs = avg_gain - avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        result = (rsi / 100 * 6) - 3
+
+    elif model == 'ersiv2':
+        delta = series.pct_change()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        avg_loss = pd.Series(loss, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        rs = avg_gain - avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        result = (rsi / 100 * 6) - 3
+
+    elif model == 'rsi':
+        # talib.RSI returns an array; ensure conversion to Series if needed.
+        rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
+        result = (rsi_values / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'rvi':    # srsi -> rvi
+        delta = np.diff(series, prepend=np.nan)
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
+        rvi = ((avg_gain / (avg_gain + avg_loss)) * 100 - 50) / 50 * 3
+        result = rvi
+
+    elif model == 'percentile': # ???, Not yet change
+        result = series.rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
+
+    elif model == 'L2':
+        @jit(nopython=True)
+        def rolling_l2_norm(data, window):
+            n = len(data)
+            result = np.zeros(n)
+            rolling_sum = 0.0
+            
+            # Calculate initial window
+            for i in range(window):
+                rolling_sum += data[i] * data[i]
+            result[window-1] = np.sqrt(rolling_sum)
+            
+            # Sliding window calculation
+            for i in range(window, n):
+                rolling_sum += data[i] * data[i] - data[i-window] * data[i-window]
+                result[i] = np.sqrt(rolling_sum)
+    
+            return result
+        l2_norms = rolling_l2_norm(series.values, rolling_window)
+        result = series / l2_norms
+
+    elif model == 'kurtosis':
+        result = pandas_ta.kurtosis(series, length=rolling_window)
+
+    elif model == 'skew':
+        result = pandas_ta.skew(series, length=rolling_window)
+
+    elif model == 'cci':
+        high = series.rolling(window=rolling_window, min_periods=rolling_window).max()
+        low = series.rolling(window=rolling_window, min_periods=rolling_window).min()
+        result = talib.CCI(high, low, series, timeperiod=rolling_window)
+        # result = pandas_ta.cci(high, low, series, length=rolling_window)
+
+    elif model == 'Weirdroc':   # Old name roc to Weirdroc
+        shifted_series = series.shift(rolling_window)
+        result = (series - shifted_series) / shifted_series
+
+    elif model == 'roc_ratio':
+        shifted_series = series.shift(rolling_window)
+        result = (series - shifted_series) / series
+
+    elif model == 'pn': # pn(percentile_norm)
+        percentile25 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
+        percentile75 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
+        result = (series - percentile25) / (percentile75 - percentile25)
+
+    elif model == 'pn_epsilon': # Old name quantile -> pn(percentile_norm with epsilon)(bq do not have a standarize name yet)
+        epsilon = 1e-9
+        percentile25 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
+        percentile75 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
+        result = (series - percentile25) / (percentile75 - percentile25 + epsilon)
+
+    elif model == 'momentum_old':   # Our Old Momentum
+        momentum = series - series.shift(rolling_window)
+        log_momentum = np.log10(np.abs(momentum) + 1) * np.sign(momentum)
+        roll_log_mom = log_momentum.rolling(window=rolling_window, min_periods=rolling_window)
+        result = log_momentum - roll_log_mom.mean()
+
+    elif model == 'momentum':
+        momentum = series - series.shift(rolling_window)
+        log_momentum = np.log10(np.abs(series) + 1) * np.sign(series)
+        roll_log_mom = log_momentum.rolling(window=rolling_window, min_periods=rolling_window)
+        result = log_momentum - roll_log_mom.mean()
+
+    elif model == 'volatility':
+        rolling_std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (series - series.shift(1)) / rolling_std
+
+    elif model == 'psy':
+        # Compute up_days and use rolling mean
+        up_days = np.where(np.diff(series, prepend=series.iloc[0]) > 0, 1, 0)
+        up_days_series = pd.Series(up_days, index=series.index)
+        result = (up_days_series.rolling(window=rolling_window, min_periods=rolling_window)
+                                   .mean() * 100 - 50) / 50 * 3
+
+    elif model == 'winsor':
+        lower_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
+        upper_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
+        result = np.where(series < lower_bound, 
+                          lower_bound, 
+                          np.where(series > upper_bound, upper_bound, series))
+
+    elif model == 'winsorized_zscore':
+        lower_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
+        upper_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
+        winsorized = series.clip(lower=lower_bound, upper=upper_bound)
+        roll = winsorized.rolling(window=rolling_window, min_periods=rolling_window)
+        roll_mean = roll.mean()
+        roll_std = roll.std(ddof=0)
+        result = (winsorized - roll_mean) / (roll_std + epsilon)
+
+    elif model == 'sigmoid':
+        roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+        roll_mean = roll.mean()
+        roll_std = roll.std(ddof=0)
+        result = 2 / (1 + np.exp(-(series - roll_mean) / (roll_std + epsilon))) - 1
+
     elif model == 'quantile':
         q1 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
         q3 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
         iqr = q3 - q1
-        df[f"{model}_{factor}"] = (series - q1) / (iqr + epsilon)
-
-    elif model == 'winsorized_zscore':
-        lower_bound = series.quantile(0.05)
-        upper_bound = series.quantile(0.95)
-        winsorized = series.clip(lower=lower_bound, upper=upper_bound)
-        if rolling_window != 0:
-            roll = winsorized.rolling(window=rolling_window, min_periods=rolling_window)
-            roll_mean = roll.mean()
-            roll_std = roll.std(ddof=0)
-            df[f"{model}_{factor}"] = (winsorized - roll_mean) / (roll_std + epsilon)
-        else:
-            df[f"{model}_{factor}"] = (winsorized - winsorized.mean()) / (winsorized.std() + epsilon)
-
-    elif model == 'sigmoid':
-        if rolling_window != 0:
-            roll = series.rolling(window=rolling_window, min_periods=rolling_window)
-            roll_mean = roll.mean()
-            roll_std = roll.std(ddof=0)
-            df[f"{model}_{factor}"] = 2 / (1 + np.exp(-(series - roll_mean) / (roll_std + epsilon))) - 1
-        else:
-            df[f"{model}_{factor}"] = 2 / (1 + np.exp(-(series - series.mean()) / (series.std() + epsilon))) - 1
+        result = (series - q1) / (iqr + epsilon)
 
     elif model == 'robust_zscore':
-        if rolling_window != 0:
-            arr = series.values.astype(np.float64)
-            n = len(arr)
-            medians = np.empty(n)
-            mads = np.empty(n)
-            # 處理初始不足 window 長度的部分
-            for i in range(rolling_window - 1):
-                win = arr[:i+1]
-                medians[i] = np.median(win)
-                mads[i] = np.median(np.abs(win - medians[i]))
-            # 使用 sliding window trick 處理充足長度的部分
-            shape = (n - rolling_window + 1, rolling_window)
-            strides = (arr.strides[0], arr.strides[0])
-            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
-            medians[rolling_window - 1:] = np.median(windows, axis=1)
-            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
-            
-            df[f"{model}_{factor}"] = 0.6745 * (series - medians) / (mads + epsilon)
-        else:
-            median = series.median()
-            mad = np.median(np.abs(series - median))
-            df[f"{model}_{factor}"] = 0.6745 * (series - median) / (mad + epsilon)
+        arr = series.values.astype(np.float64)
+        n = len(arr)
+        medians = np.empty(n)
+        mads = np.empty(n)
+
+        # 使用 sliding window trick 處理充足長度的部分
+        shape = (n - rolling_window + 1, rolling_window)
+        strides = (arr.strides[0], arr.strides[0])
+        windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+        medians[rolling_window - 1:] = np.median(windows, axis=1)
+        mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
+        
+        result = 0.6745 * (series - medians) / mads
 
     elif model == 'tanh':
-        if rolling_window != 0:
-            arr = series.values.astype(np.float64)
-            n = len(arr)
-            medians = np.empty(n)
-            mads = np.empty(n)
-            # 處理初始不足 window 長度的部分
-            for i in range(rolling_window - 1):
-                win = arr[:i+1]
-                medians[i] = np.median(win)
-                mads[i] = np.median(np.abs(win - medians[i]))
-            # 使用 sliding window trick 處理充足長度的部分
-            shape = (n - rolling_window + 1, rolling_window)
-            strides = (arr.strides[0], arr.strides[0])
-            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
-            medians[rolling_window - 1:] = np.median(windows, axis=1)
-            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
-            
-            df[f"{model}_{factor}"] = np.tanh((series - medians) / (mads + epsilon))
-        else:
-            median = series.median()
-            mad = np.median(np.abs(series - median))
-            df[f"{model}_{factor}"] = np.tanh((series - median) / (mad + epsilon))
+        arr = series.values.astype(np.float64)
+        n = len(arr)
+        medians = np.full(n, np.nan)
+        mads = np.full(n, np.nan)
+
+        # 使用 sliding window trick 處理充足長度的部分
+        shape = (n - rolling_window + 1, rolling_window)
+        strides = (arr.strides[0], arr.strides[0])
+        windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+        medians[rolling_window - 1:] = np.median(windows, axis=1)
+        mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
+        
+        result = np.tanh((series - medians) / mads)
 
     elif model == 'slope':
         arr = series.values
@@ -279,8 +458,12 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             slopes_vec[constant_mask] = 0
             
             slopes = np.concatenate((np.full(rolling_window - 1, np.nan), slopes_vec))
-        df[f"{model}_{factor}"] = slopes
+        result = slopes
 
+    elif model == 'chg':
+        shifted = series.shift(rolling_window)
+        result = (series - shifted) / rolling_window
+        
     elif model == 'roc_zscore':
         # Step 1: Compute ROC
         shifted_series = series.shift(rolling_window)
@@ -291,39 +474,19 @@ def model_calculation(df, rolling_window, threshold, model='zscore', factor='clo
             roll = roc_series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_std = roll.std(ddof=0)
-            df[f"{model}_{factor}"] = (roc_series - roll_mean) / (roll_std + epsilon)
+            result = (roc_series - roll_mean) / (roll_std + epsilon)
         else:
-            df[f"{model}_{factor}"] = (roc_series - roc_series.mean()) / (roc_series.std() + epsilon)
-    
-    elif model == 'madzscore':
-        median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
-        median_std = series.rolling(window=rolling_window, min_periods=rolling_window).std()
-        df[f"{model}_{factor}"] = (series - median) / (median_std + epsilon)
-        
-    elif model == 'emadiffv2':
-        if rolling_window != 0:
-            ewm_mean = series.ewm(span=rolling_window, adjust=False).mean()
-            result = (series - ewm_mean) / (ewm_mean + epsilon)
-        else:
-            result = (series - np.mean(series)) / (np.mean(series) + epsilon)
-        df[f"{model}_{factor}"] = result
-    
-    elif model == 'mediandiffv2':
-        if rolling_window != 0:
-            median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
-            result = (series - median) / (median + epsilon)
-        else:
-            result = (series - np.median(series)) / (np.median(series) + epsilon)
-        df[f"{model}_{factor}"] = result
+            result = (roc_series - roc_series.mean()) / (roc_series.std(ddof=0) + epsilon)
 
-    return df
+    return result
 
 @njit(cache=True)
-def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:float):
+def position_calculation(signal, entry_logic:str, threshold:float):
+
     # Position Calculation Part
     position = np.zeros(len(signal))
 
-    if backtest_mode == "trend":
+    if entry_logic == "trend":
         # Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -332,7 +495,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "trend_reverse":
+    elif entry_logic == "trend_reverse":
         # Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -341,7 +504,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 1
             else:   # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "mr":
+    elif entry_logic == "mr":
         # Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -353,7 +516,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "mr_reverse":
+    elif entry_logic == "mr_reverse":
         # Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go short
@@ -365,34 +528,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "fast":
-        # Trend position Entry, Exit at Opposite Threshold
-        for i in range(len(signal)):
-            if signal[i] >= threshold:  # Signal exceeds threshold → Go long
-                position[i] = 1
-            elif signal[i] <= -threshold:  # Signal below negative threshold → Go short
-                position[i] = -1
-            else:  # Do Not Hold position
-                position[i] = 0
-    elif backtest_mode == "trend_emaFilter":
-        # Trend position Entry, EMA filter input
-        for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] >= close_ema[i]:
-                position[i] = 1
-            elif signal[i] <= -threshold and close[i] <= close_ema[i]:
-                position[i] = -1
-            else:   # Hold position
-                position[i] = position[i-1]
-    elif backtest_mode == "fast_emaFilter":
-        # Trend position Entry, Exit at Opposite Threshold
-        for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] >= close_ema[i]:
-                position[i] = 1
-            elif signal[i] <= -threshold and close[i] <= close_ema[i]:
-                position[i] = -1
-            else:  # Do Not Hold position
-                position[i] = 0
-    elif backtest_mode == "trend_long":
+    elif entry_logic == "trend_long":
         # Long-Only Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -401,7 +537,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "trend_short":
+    elif entry_logic == "trend_short":
         # Short-Only Trend position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -410,7 +546,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "trend_reverse_long":
+    elif entry_logic == "trend_reverse_long":
         # Long-Only Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -419,7 +555,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 1
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "trend_reverse_short":
+    elif entry_logic == "trend_reverse_short":
         # Short-Only Trend Reverse position Entry
         for i in range(len(signal)):
             if signal[i] >= threshold:
@@ -428,7 +564,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position
                 position[i] = position[i-1]
-    elif backtest_mode == "mr_long":
+    elif entry_logic == "mr_long":
         # Long-Only Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
@@ -440,7 +576,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "mr_short":
+    elif entry_logic == "mr_short":
         # Short-Only Mean Reversion position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Position
@@ -452,7 +588,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "mr_reverse_long":
+    elif entry_logic == "mr_reverse_long":
         # Long-Only Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Short(Long Only)
@@ -464,7 +600,7 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Hold position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "mr_reverse_short":
+    elif entry_logic == "mr_reverse_short":
         # Short-Only Mean Reversion Reverse position Entry, Exit at 0
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go Short
@@ -476,8 +612,17 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Carry forward the previous position if no entry/exit condition is met
                 position[i] = position[i-1]
-    elif backtest_mode == "fast_long":
-        # Long-Only Trend position Entry, Exit at Opposite Threshold
+    elif entry_logic == "fast":
+        # Trend position Entry, Exit at Same Threshold
+        for i in range(len(signal)):
+            if signal[i] >= threshold:  # Signal exceeds threshold → Go long
+                position[i] = 1
+            elif signal[i] <= -threshold:  # Signal below negative threshold → Go short
+                position[i] = -1
+            else:  # Do Not Hold position
+                position[i] = 0
+    elif entry_logic == "fast_long":
+        # Long-Only Trend position Entry, Exit at Same Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → Go long
                 position[i] = 1
@@ -485,8 +630,8 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = 0
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "fast_short":
-        # Short-Only Trend position Entry, Exit at Opposite Threshold
+    elif entry_logic == "fast_short":
+        # Short-Only Trend position Entry, Exit at Same Threshold
         for i in range(len(signal)):
             if signal[i] >= threshold:  # Signal exceeds threshold → No Long(Short Only)
                 position[i] = 0
@@ -494,143 +639,125 @@ def position_calculation(signal, close, close_ema, backtest_mode:str, threshold:
                 position[i] = -1
             else:  # Do Not Hold position
                 position[i] = 0
-    elif backtest_mode == "trend_long_emaFilter":
-        # Long-Only Trend position Entry, EMA filter input
+    elif entry_logic == "fast_reverse":
+        # Trend Reverse position Entry, Exit at Same Threshold
         for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] >= close_ema[i]:
-                position[i] = 1
-            elif signal[i] <= -threshold and close[i] <= close_ema[i]:
-                position[i] = 0
-            else:   # Hold position
-                position[i] = position[i-1]
-    elif backtest_mode == "trend_short_emaFilter":
-        # Short-Only Trend position Entry, EMA filter input
-        for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] <= close_ema[i]:
-                position[i] = 0
-            elif signal[i] <= -threshold and close[i] >= close_ema[i]:
+            if signal[i] >= threshold:  # Signal exceeds threshold → Go short
                 position[i] = -1
-            else:   # Hold Position
-                position[i] = position[i-1]
-    elif backtest_mode == "fast_long_emaFilter":
-        # Long-Only Trend position Entry, Exit at Opposite Threshold, EMA filter input
-        for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] >= close_ema[i]:
+            elif signal[i] <= -threshold:  # Signal below negative threshold → Go long
                 position[i] = 1
-            elif signal[i] <= -threshold and close[i] <= close_ema[i]:
+            else:  # Do Not Hold position
                 position[i] = 0
-            else:   # Do Not Hold
-                position[i] = 0
-    elif backtest_mode == "fast_short_emaFilter":
-        # Short-Only Trend position Entry, Exit at Opposite Threshold, EMA filter input
+    elif entry_logic == "fast_reverse_long":
+        # Long-Only Trend Reverse position Entry, Exit at Same Threshold
         for i in range(len(signal)):
-            if signal[i] >= threshold and close[i] <= close_ema[i]:
+            if signal[i] >= threshold:  # Signal exceeds threshold → No Short(Long Only)
                 position[i] = 0
-            elif signal[i] <= -threshold and close[i] >= close_ema[i]:
+            elif signal[i] <= -threshold:  # Signal below negative threshold → Go long
+                position[i] = 1
+            else:  # Do Not Hold position
+                position[i] = 0
+    elif entry_logic == "fast_reverse_short":
+        # Short-Only Trend Reverse position Entry, Exit at Same Threshold
+        for i in range(len(signal)):
+            if signal[i] >= threshold:  # Signal exceeds threshold → Go Short
                 position[i] = -1
-            else:   # Do Not Hold
+            elif signal[i] <= -threshold:  # Signal below negative threshold → No Long(Short Only)
                 position[i] = 0
+            else:  # Do Not Hold position
+                position[i] = 0
+    elif entry_logic == 'trend_zero':
+        long_opened = False
+        short_opened = False
+        for i in range(len(signal)):    # 每次穿0只會在單邊開倉1次, 直至穿0換邊
+            if signal[i] > 0 and not long_opened:  # 首次穿越0且未開多倉, Signal exceeds 0 → Go long
+                position[i] = 1
+                long_opened = True
+                short_opened = False
+            elif signal[i] < 0 and not short_opened:  # 首次穿越0且未開空倉, Signal below 0 → Go short
+                position[i] = -1
+                short_opened = True
+                long_opened = False
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else: 
+                position[i] = position[i-1] # 維持前一個時間點的倉位
 
+    elif entry_logic == 'trend_zero_long':
+        long_opened = False
+        short_opened = False
+        for i in range(len(signal)):    # 每次穿0只會在單邊開倉1次, 直至穿0換邊
+            if signal[i] > 0 and not long_opened:  # 首次穿越0且未開多倉, Signal exceeds 0 → Go long
+                position[i] = 1
+                long_opened = True
+                short_opened = False
+            elif signal[i] < 0 and not short_opened:  # 首次穿越0且未開空倉, Signal below 0 → Go short
+                position[i] = 0
+                short_opened = True
+                long_opened = False
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else:
+                position[i] = position[i-1] # 維持前一個時間點的倉位
+    elif entry_logic == 'trend_zero_short':
+        long_opened = False
+        short_opened = False
+        for i in range(len(signal)):    # 每次穿0只會在單邊開倉1次, 直至穿0換邊
+            if signal[i] > 0 and not long_opened:  # 首次穿越0且未開多倉, Signal exceeds 0 → Go long
+                position[i] = 0
+                long_opened = True
+                short_opened = False
+            elif signal[i] < 0 and not short_opened:  # 首次穿越0且未開空倉, Signal below 0 → Go short
+                position[i] = -1
+                short_opened = True
+                long_opened = False
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else:
+                position[i] = position[i-1] # 維持前一個時間點的倉位
+    elif entry_logic == 'trend_zero_fast':
+        for i in range(len(signal)):    # 0至threshold內持有多倉, >threshold出場, 0至-threshold內持有空倉, <-threshold出場
+            if signal[i] > 0:  # Signal exceeds 0 → Go long
+                position[i] = 1
+            elif signal[i] < 0: # Signal below 0 → Go short
+                position[i] = -1
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else:
+                position[i] = 0
+    elif entry_logic == 'trend_zero_fast_long':
+        for i in range(len(signal)):    # 只開多, 0至threshold內持有多倉, >threshold出場
+            if signal[i] > 0:  # Signal exceeds 0 → Go long
+                position[i] = 1
+            elif signal[i] < 0: # Signal below 0 → Go short
+                position[i] = 0
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else:
+                position[i] = 0 # 維持前一個時間點的倉位
+    elif entry_logic == 'trend_zero_fast_short':
+        for i in range(len(signal)):    # 只開空, 0至threshold內持有空倉, <-threshold出場
+            if signal[i] > 0:  # Signal exceeds 0 → Go long
+                position[i] = 0
+            elif signal[i] < 0: # Signal below 0 → Go short
+                position[i] = -1
+            elif signal[i] >= threshold and position[i-1] == 1: # 多倉平倉
+                position[i] = 0
+            elif signal[i] <= -threshold and position[i-1] == -1: # 空倉平倉
+                position[i] = 0
+            else:
+                position[i] = 0
     return position
-
-def data_processing(df: pd.DataFrame, method: str, column: str, mode: str = 'default') -> pd.DataFrame:
-    """
-    Apply transformation and preprocessing methods to a specific column in the DataFrame.
-
-    Parameters:
-    - df (pd.DataFrame): Input DataFrame.
-    - method (str): Transformation method ('log', 'pct_change', 'diff', 'square', 'sqrt', 'cube', 'cbrt').
-    - column (str): Column to apply the transformation on.
-    - mode (str): 'default' for PnL plotting (modifies original df), 'sr' for SR Heatmap (uses df copy).
-
-    Returns:
-    - pd.DataFrame: DataFrame with the transformed column.
-    """
-    if column not in df.columns:
-        raise ValueError(f"Column '{column}' not found in the DataFrame.")
-
-    # ✅ Use a copy for SR calculations to preserve the original data
-    if mode == 'sr':
-        df_transformed = df.copy()
-    else:
-        df_transformed = df  # Direct modification for PnL calculations
-
-    # Apply transformations
-    if method == 'log':
-        df_transformed[column] = np.log(df_transformed[column].replace(0, np.nan))
-    elif method == 'log10':
-        df_transformed[column] = np.log10(df_transformed[column].replace(0, np.nan))
-    elif method == 'pct_chg':
-        df_transformed[column] = df_transformed[column].pct_change()
-    elif method == 'diff':
-        df_transformed[column] = df_transformed[column].diff()
-    elif method == 'square':
-        df_transformed[column] = np.square(df_transformed[column])
-    elif method == 'sqrt':
-        df_transformed[column] = np.sqrt(df_transformed[column].clip(lower=0))
-    elif method == 'cube':
-        df_transformed[column] = np.power(df_transformed[column], 3)
-    elif method == 'cbrt':
-        df_transformed[column] = np.cbrt(df_transformed[column])
-    elif method == 'boxcox':
-        df_transformed[column], best_lambda = boxcox(df_transformed[column])
-    else:
-        raise ValueError(f"Invalid transformation method: {method}")
-
-    # Handle NaN based on the mode
-    if mode == 'sr':  # For SR Heatmap
-        df_transformed[column] = df_transformed[column].ffill()  # Forward fill NaNs
-    else:  # Default for PnL plotting
-        df_transformed[column] = df_transformed[column].fillna(0)  # Replace NaNs with 0 to avoid PnL issues
-
-    return df_transformed
-
-def combine_factors(
-    df: pd.DataFrame,
-    factor1: str,          # 第一個欄位名稱，例如 "zscore_close"
-    factor2: str,          # 第二個欄位名稱，例如 "robust_close"
-    operation: str = "+"
-) -> pd.DataFrame:
-    """
-    Combine two factor columns in df using an arithmetic operation: +, -, *, /.
-
-    Parameters:
-    -----------
-    df : pd.DataFrame
-        包含原始或已做過 model_calculation 後的因子欄位
-    factor1 : str
-        第一個因子欄位名稱
-    factor2 : str
-        第二個因子欄位名稱
-    operation : str, default "+"
-        要做的運算類型，可是 +, -, *, /
-
-    Returns:
-    --------
-    pd.DataFrame
-        傳回同一個 df，但多了一欄新的合成欄位，例如 "factor1+factor2"
-    """
-    if factor1 not in df.columns:
-        raise ValueError(f"{factor1} 不存在於 df 欄位中")
-    if factor2 not in df.columns:
-        raise ValueError(f"{factor2} 不存在於 df 欄位中")
-
-    new_col_name = f"{factor1}{operation}{factor2}"
-
-    if operation == "+":
-        df[new_col_name] = (df[factor1] + df[factor2]).astype(np.float64)  # 強制轉換為 float64
-    elif operation == "-":
-        df[new_col_name] = (df[factor1] - df[factor2]).astype(np.float64)  # 強制轉換為 float64
-    elif operation == "*":
-        df[new_col_name] = (df[factor1] * df[factor2]).astype(np.float64)  # 強制轉換為 float64
-    elif operation == "/":
-        # 注意 0 division，視需求做處理
-        df[new_col_name] = (df[factor1] / (df[factor2].replace(0, np.nan))).astype(np.float64)  # 強制轉換為 float64
-    else:
-        raise ValueError(f"不支援的運算: {operation}")
-
-    return df, new_col_name
-
 
 def compute_drawdown_durations(cumu_pnl: np.ndarray,
                                include_last_incomplete: bool = True) -> list:
@@ -682,144 +809,441 @@ def compute_drawdown_durations(cumu_pnl: np.ndarray,
 
     return durations.tolist()
 
-
-def backtest(df:pd.DataFrame, rolling_window:int, threshold:float, preprocess_method="NONE", backtest_mode="Trend", annualizer=365, model='zscore', factor='close', interval='1d', plotsr='default'):
-    # Preprocess the data if needed
-    if preprocess_method != "direct":
-        df = data_processing(df, preprocess_method, factor, plotsr)
-
-    df = model_calculation(df, rolling_window, threshold, model, factor)
-    # Copy the zscore_btc column to a new column called signal
-    df['signal'] = df[f"{model}_{factor}"]
-    
-
-    # Position Calculation
-    close = df['close'].values
-    df['close_ema'] = talib.EMA(close, timeperiod=52)
-    close_ema = df['close_ema'].values
-    signal = df['signal'].values
-    position = position_calculation(signal, close, close_ema, backtest_mode, threshold)
-
-    # Metrics Calculation Part
+def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_window: int, threshold: float, preprocess_method="NONE",
+             entry_logic="Trend", annualizer=365, model='zscore', factor='close', interval='1d',
+             rolling_stats=None): 
+    log_msgs = []
     fee = 0.0006
-    pos = position
-    trades = np.abs(np.diff(pos, prepend=0))
     
-    # Precompute shifted position for PNL
+    start_time = max(candle_df['start_time'].min(), factor_df['start_time'].min())
+    end_time = min(candle_df['start_time'].max(), factor_df['start_time'].max())
+
+    # 1. 模型計算（使用 cache 版本）
+    factor_df['signal'] = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
+    # factor_df['signal'] = modified_factor
+
+    # 2. Signal 3% NaN Check (大於3%就不回測, return None)
+    # 2.1 將 inf 和 -inf 轉換成NaN
+    factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
+    # 2.2 3% NaN Check
+    if factor_df['signal'].isna().sum() < (0.03 * (len(factor_df['signal']) - rolling_window)) :
+        # 2.3 將 NaN 值刪除
+        signal_nan_count = nan_count(factor_df['signal'])
+        # msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
+        #        f"{c.factor} NaN count: {signal_nan_count}, Dropping NaN and Keep Backtest.")
+        # log_msgs.append(msg)
+        factor_df['signal'] = factor_df['signal'].dropna()
+    else:
+        # msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
+        #        f"nan_count: {factor_df['signal'].isna().sum()}, {c.factor} NaN percentage: "
+        #        f"{factor_df['signal'].isna().sum() / len(factor_df['signal']):.3f}, skipping backtest.")
+        # log_msgs.append(msg)
+        performance_metrics = {
+        "factor_name": c.factor_name,
+        "Data_Preprocess": preprocess_method,
+        "entry_exit_logic": entry_logic,
+        "fees": fee,
+        "interval": interval,
+        "model": model,
+        "rolling_window": int(rolling_window),
+        "threshold": float(threshold),
+        "Number_of_Trades": 0,
+        "TR": np.nan,
+        "SR": np.nan,
+        "CR": np.nan,
+        "Sortino_Ratio": np.nan,
+        "sharpe_calmar": np.nan,
+        "MDD": np.nan,
+        "AR": np.nan,
+        "trade_per_interval": np.nan,
+        f"MAX_Drawdown_Duration({interval})": np.nan,
+        f"Average_Drawdown_Duration({interval})": np.nan,
+        "Equity_Curve_Slope": np.nan,
+        "skewness": np.nan,
+        "kurtosis": np.nan,
+        "R-Square": np.nan,
+        "Tail_Ratio": np.nan,
+        "Commission_to_Profit_Ratio": np.nan
+    }
+        if 'df' not in locals():
+            df = pd.DataFrame()
+        return performance_metrics, df, log_msgs
+
+    # 3. Position 計算
+    close = candle_df['close'].values
+    signal = factor_df['signal'].values
+    position = position_calculation(signal,  entry_logic, threshold)
+
+    factor_df['pos'] = position
+    # 3.5 在 factor_df 和 candle_df 都加入 time 欄位
+    factor_df['time'] = pd.to_datetime(factor_df['start_time'], unit='ms')
+    candle_df['time'] = pd.to_datetime(candle_df['start_time'], unit='ms')
+
+    # 使用 time 作為索引
+    factor_df.set_index('time', inplace=True)
+
+    # 創建完整的時間範圍索引
+    full_range = pd.date_range(start=pd.to_datetime(start_time, unit='ms'), 
+                            end=pd.to_datetime(end_time, unit='ms'), 
+                            freq=interval)
+
+    # 重新索引並前向填充缺失值
+    factor_df = factor_df.reindex(full_range)
+    factor_df = factor_df.ffill()
+
+    # 重新設定 candle_df 的索引
+    candle_df.set_index('time', inplace=True)
+
+    # 合併 candle_df 和 factor_df
+    df = pd.concat([candle_df, factor_df], axis=1)  # 如果有問題可以用 merge_asof()
+
+    # 確保索引是 time
+    df.reset_index(inplace=True)
+    df.rename(columns={'index': 'time'}, inplace=True)
+    
+    # 4. 損益與績效計算
+    pos = df['pos'].values
+
+    # # 檢查 index
+    # print("df index preview before trimming:", df.index[:5])
+    # print("pos length:", len(pos))
+    # print("df length before trimming:", len(df))
+
+    # 4. 計算損益
+    trades = np.abs(np.diff(pos, prepend=0))
     shifted_pos = np.roll(pos, 1)
     shifted_pos[0] = 0
-    
-    # Calculate PNL using numpy vectorization
+
+    close = df['close'].values
     pct_change = np.concatenate(([0], np.diff(close) / close[:-1]))
+
+    # 確保 shape 正確
+    # print(f"🔍 pct_change shape: {pct_change.shape}, shifted_pos shape: {shifted_pos.shape}, trades shape: {trades.shape}")
+
     pnl = pct_change * shifted_pos - trades * fee
     cumu_pnl = np.cumsum(pnl)
     cumu_max = np.maximum.accumulate(cumu_pnl)
     drawdown = cumu_pnl - cumu_max
 
-    # Assign back to DataFrame
     df['pos'] = pos
     df['trades'] = trades
+    # df['diff%'] = pct_change
     df['pnl'] = pnl
     df['cumu_pnl'] = cumu_pnl
     df['drawdown'] = drawdown
 
-    # Metrics Calculation
+    # Calculate metrics, handling potential NaN/division by zero
     pnl_std = np.std(pnl)
     pnl_mean = np.mean(pnl)
     max_drawdown = np.min(drawdown)
 
+    # Handle potential NaN or division by zero
     sharpe_ratio = np.nan if pnl_std == 0 or np.isnan(pnl_std) else math.sqrt(annualizer) * pnl_mean / pnl_std
     calmar_ratio = np.nan if max_drawdown == 0 or np.isnan(max_drawdown) else annualizer * pnl_mean / abs(max_drawdown)
-    # Sharpe * Calmar
     sharpe_calmar = sharpe_ratio * calmar_ratio if not (np.isnan(sharpe_ratio) or np.isnan(calmar_ratio)) else np.nan
-
     avg_return = pnl_mean * annualizer if not np.isnan(pnl_mean) else np.nan
     total_return = cumu_pnl[-1] if len(cumu_pnl) > 0 else 0.0
     num_trades = np.sum(trades)
-    trade_per_interval = num_trades / len(df)
+    trade_per_interval = num_trades / len(df) if len(df) > 0 else np.nan
     
-    # Average and MAX Drawdown Duration (Bar)
     dd_periods = compute_drawdown_durations(cumu_pnl)
     avg_dd_bar = float(np.mean(dd_periods)) if len(dd_periods) > 0 else 0.0
     max_dd_bar = float(np.max(dd_periods)) if len(dd_periods) > 0 else 0.0
     
-    # Equity Curve Slope
     if len(cumu_pnl) > 1:
-        # Check if cumu_pnl is constant
         if np.all(cumu_pnl == cumu_pnl[0]):
-            # Entire array is constant → correlation is undefined.
             slope = np.nan
             r_square = np.nan
         else:
-            # Equity Curve Slope
             x_arr = np.arange(len(cumu_pnl))
             slope, intercept = np.polyfit(x_arr, cumu_pnl, 1)
-
-            # This will be safe if cumu_pnl is not constant:
             r_value = np.corrcoef(x_arr, cumu_pnl)[0, 1]
-            r_square = r_value**2 #if not np.isnan(r_value) else np.nan
-            # slope_, intercept_, r_value, p_value, std_err = linregress(np.arange(len(cumu_pnl)), cumu_pnl)
-            # r_square = r_value**2 if not np.isnan(r_value) else np.nan
+            r_square = r_value**2
+
     else:
         slope = np.nan
         r_square = np.nan
 
-    # Sortino Ratio
     negative_pnl = pnl[pnl < 0]
     if len(negative_pnl) > 1:
         downside_deviation = np.std(negative_pnl) if np.std(negative_pnl) != 0 else np.nan
-        sortino_ratio = (pnl_mean * annualizer) / (downside_deviation * math.sqrt(annualizer))
+        sortino_ratio = (pnl_mean * annualizer) / (downside_deviation * math.sqrt(annualizer)) if downside_deviation != 0 else np.nan
     else:
         sortino_ratio = np.nan
     
-    # Skewness
-    pnl_skewness = skew(pnl, bias=False) if len(pnl) > 1 else np.nan
+    # Handle skewness and kurtosis calculation for small samples
+    try:
+        pnl_skewness = skew(pnl, bias=False) if len(pnl) > 2 else np.nan
+    except:
+        pnl_skewness = np.nan
+        
+    try:
+        pnl_kurtosis = kurtosis(pnl, bias=False) if len(pnl) > 2 else np.nan
+    except:
+        pnl_kurtosis = np.nan
 
-    pnl_kurtosis = kurtosis(pnl, bias=False) if len(pnl) > 1 else np.nan
-
-    # Tail Ratio
+    # Calculate tail ratio safely
     if len(pnl) > 1:
         p95 = np.percentile(pnl, 95)
         p5 = np.percentile(pnl, 5)
-        if p5 == 0 or np.isnan(p5) or np.isinf(p5):
+        if p5 == 0 or np.isnan(p5) or np.isinf(p5) or p5 == 0:
             p5 = np.nan
-        tail_ratio = (abs(p95) / abs(p5))
+        else:
+            tail_ratio = abs(p95) / abs(p5)
+
     else:
         tail_ratio = np.nan
 
-    # Commission to Profit Ratio
     commission = fee * num_trades
-    if total_return == 0.0:
-        total_return = np.nan
-    C2P_ratio = commission / total_return
+    if total_return == 0.0 or np.isnan(total_return) or total_return == 0:
+        C2P_ratio = np.nan
+    else:
+        C2P_ratio = commission / total_return
     
-    # Store SR into a dictionary
+    # Create performance metrics dictionary, making sure to handle all potential NaN values
     performance_metrics = {
-            "factor_name": factor,
-            "Data_Preprocess": preprocess_method,
-            "backtest_mode": backtest_mode,
-            "fees": fee,
-            "interval": interval,
-            "model": model,
-            "rolling_window": int(rolling_window),
-            "threshold": float(threshold),
-            "Number_of_Trades": int(num_trades),
-            "TR": float(total_return),
-            "SR": float(sharpe_ratio),
-            "CR": float(calmar_ratio),
-            "Sortino_Ratio": float(sortino_ratio),
-            "sharpe_calmar": float(sharpe_calmar),
-            "MDD": float(max_drawdown),
-            "AR": float(avg_return),
-            "trade_per_interval": float(trade_per_interval),
-            f"MAX_Drawdown_Duration({interval})": float(max_dd_bar),
-            f"Average_Drawdown_Duration({interval})": float(avg_dd_bar),
-            "Equity_Curve_Slope": float(slope),
-            "skewness": float(pnl_skewness),
-            "kurtosis": float(pnl_kurtosis),
-            "R-Square": float(r_square),
-            "Tail_Ratio": float(tail_ratio),
-            "Commission_to_Profit_Ratio": float(C2P_ratio)
-        }
+        "factor_name": c.factor_name,
+        "Data_Preprocess": preprocess_method,
+        "entry_exit_logic": entry_logic,
+        "fees": fee,
+        "interval": interval,
+        "model": model,
+        "rolling_window": int(rolling_window),
+        "threshold": float(threshold),
+        "Number_of_Trades": int(num_trades),
+        "TR": float(total_return),
+        "SR": float(sharpe_ratio),
+        "CR": float(calmar_ratio),
+        "Sortino_Ratio": float(sortino_ratio),
+        "sharpe_calmar": float(sharpe_calmar),
+        "MDD": float(max_drawdown),
+        "AR": float(avg_return),
+        "trade_per_interval": float(trade_per_interval),
+        f"MAX_Drawdown_Duration({interval})": float(max_dd_bar),
+        f"Average_Drawdown_Duration({interval})": float(avg_dd_bar),
+        "Equity_Curve_Slope": float(slope),
+        "skewness": float(pnl_skewness),
+        "kurtosis": float(pnl_kurtosis),
+        "R-Square": float(r_square),
+        "Tail_Ratio": float(tail_ratio),
+        "Commission_to_Profit_Ratio": float(C2P_ratio)
+    }
+    if 'df' not in locals():
+        df = pd.DataFrame()
+    return performance_metrics, df, log_msgs
+
+def additional_metrics(
+    alpha_id="None", symbol="None", factor="None", factor2="None",
+    factor_operation="None", shift_candle_minite="None",
+    backtest_mode="None", start_time="None", end_time="None"
+):
+    return {
+        "alpha_id": alpha_id,
+        "symbol": symbol,
+        "factor": factor,
+        "factor2": factor2,
+        "factor_operation": factor_operation,
+        "shift_candle_minite": shift_candle_minite,
+        "backtest_mode": backtest_mode,
+        "start_time": start_time,
+        "end_time": end_time,
+    }
+
+def model_calculation_bq(series, rolling_window, model='zscore', factor='close', rolling_stats=None): 
+    epsilon = 0
+    calc_df = pd.DataFrame()
+    calc_df['data'] = series
+
+    if model == 'zscore':
+        calc_df['sma'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (calc_df['data'] - calc_df['sma']) / (calc_df['std'])
+
+    elif model == 'ezscore':
+        calc_df['ema'] = calc_df['data'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (calc_df['data'] - calc_df['ema']) / (calc_df['std'])
+
+    elif model == 'ezscorev1':  # Previous ezscore to ezscorev1
+        calc_df['ema'] = calc_df['data'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['ema_std'] = calc_df['data'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).std()
+        result = (calc_df['data'] - calc_df['ema']) / (calc_df['ema_std'])
+
+    elif model == 'madzscore':
+        calc_df['median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).median()
+        calc_df['deviation'] = abs(calc_df['data'] - calc_df['median'])
+        calc_df['mad'] = calc_df['deviation'].rolling(window=rolling_window, min_periods=rolling_window).median()
+        result = 0.6745 * (calc_df['data'] - calc_df['median']) / calc_df['mad']
+
+    elif model == 'robustscaler':
+        calc_df['rolling_median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).median()
+        calc_df['rolling_iqr'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75) - calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
+        result = (calc_df['data'] - calc_df['rolling_median']) / calc_df['rolling_iqr']
+
+    elif model == 'minmaxscaling':
+        calc_df['rolling_min'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).min()
+        calc_df['rolling_max'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).max()
+        result = 2 * (calc_df['data'] - calc_df['rolling_min']) / (calc_df['rolling_max'] - calc_df['rolling_min']) - 1
+
+    elif model == 'meannorm':
+        calc_df['rolling_mean'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['rolling_min'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).min()
+        calc_df['rolling_max'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).max()
+        result = (calc_df['data'] - calc_df['rolling_mean']) / (calc_df['rolling_max'] - calc_df['rolling_min'])
+
+    elif model == 'maxabs':
+        calc_df['abs_data'] = np.abs(calc_df['data'])
+        rolling_max_abs = calc_df['abs_data'].rolling(window=rolling_window, min_periods=rolling_window).max()
+        result = series / rolling_max_abs
+
+    elif model == 'smadiffv2':
+        calc_df['sma'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        result = (calc_df['data'] - calc_df['sma']) / calc_df['sma'].abs()
+
+    elif model == 'emadiffv2':
+        calc_df['ema'] = calc_df['data'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        result = (calc_df['data'] - calc_df['ema']) / calc_df['ema'].abs()
+            
+    elif model == 'mediandiffv2':
+        calc_df['median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).median()
+        result = (calc_df['data'] - calc_df['median']) / calc_df['median'].abs()
+
+    elif model == 'mad':
+        calc_df['roll_mean'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['mad'] = (calc_df['data'].rolling(window=rolling_window,min_periods=rolling_window).apply(lambda x: np.mean(np.abs(x - x.mean()))))
+        result = (calc_df['data'] - calc_df['roll_mean']) / calc_df['mad']
+
+    elif model == 'srsi':
+        calc_df['delta'] = calc_df['data'].diff()
+        calc_df['gain'] = calc_df['delta'].where(calc_df['delta'] > 0, 0)
+        calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
+        calc_df['avg_gain'] = calc_df['gain'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['avg_loss'] = calc_df['loss'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['rs'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['rsi'] = 100 - (100 / (1+ calc_df['rs']))
+        result = (calc_df['rsi'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'ersi':
+        calc_df['delta'] = calc_df['data'].diff()
+        calc_df['gain'] = calc_df['delta'].where(calc_df['delta'] > 0, 0)
+        calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
+        calc_df['avg_gain'] = calc_df['gain'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['avg_loss'] = calc_df['loss'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['ers'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['ersi'] = 100 - (100 / (1+ calc_df['ers']))
+        result = (calc_df['ersi'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'srsiv2':
+        calc_df['delta'] = calc_df['data'].pct_change()
+        calc_df['gain'] = calc_df['delta'].where(calc_df['delta'] > 0, 0)
+        calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
+        calc_df['avg_gain'] = calc_df['gain'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['avg_loss'] = calc_df['loss'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['rs'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['srsiv2'] = 100 - (100 / (1+ calc_df['rs']))
+        result = (calc_df['srsiv2'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'ersiv2':
+        calc_df['delta'] = calc_df['data'].pct_change()
+        calc_df['gain'] = calc_df['delta'].where(calc_df['delta'] > 0, 0)
+        calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
+        calc_df['avg_gain'] = calc_df['gain'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['avg_loss'] = calc_df['loss'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
+        calc_df['ers'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['ersiv2'] = 100 - (100 / (1+ calc_df['ers']))
+        result = (calc_df['ersiv2'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'rsi':
+        # talib.RSI returns an array; ensure conversion to Series if needed.
+        rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
+        result = (rsi_values / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
+
+    elif model == 'percentile': # ???, Not yet change
+        result = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
+
+    elif model == 'L2':
+        calc_df['rolling_l2'] = np.sqrt(calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).apply(lambda x: np.sum(x**2), raw=True))
+        result = calc_df['data'] / calc_df['rolling_l2']
+
+    elif model == 'kurtosis':
+        result = pandas_ta.kurtosis(calc_df['data'], length=rolling_window)
+
+    elif model == 'skew':
+        result = pandas_ta.skew(calc_df['data'], length=rolling_window)
     
-    return performance_metrics
+    elif model == 'cci':
+        high = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).max()
+        low = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).min()
+        result = pandas_ta.cci(high, low, calc_df['data'], length=rolling_window)
+
+    elif model == 'Weirdroc':    # Old name roc to Weirdroc
+        calc_df['shifted_series'] = calc_df['data'].shift(rolling_window)
+        result = (calc_df['data'] - calc_df['shifted_series']) / calc_df['shifted_series']
+
+    # Got other ROC from bq that is not inside the model.
+    elif model == 'roc_ratio':
+        calc_df['shifted_series'] = calc_df['data'].shift(rolling_window)
+        result = (calc_df['data'] - calc_df['shifted_series']) / calc_df['data']
+
+    elif model == 'pn':   # pn(percentile_norm)
+        calc_df['25th_percentile'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
+        calc_df['75th_percentile'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
+        result = (calc_df['data'] - calc_df['25th_percentile']) / (calc_df['75th_percentile'] - calc_df['25th_percentile'])
+    
+    elif model == 'pn_epsilon':   # Old name quantile -> pn(percentile_norm with epsilon)(bq do not have a standarize name yet)
+        epsilon = 1e-9
+        calc_df['25th_percentile'] = calc_df['data'].rolling(window=rolling_window).quantile(0.25)
+        calc_df['75th_percentile'] = calc_df['data'].rolling(window=rolling_window).quantile(0.75)
+        result = (calc_df['data'] - calc_df['25th_percentile']) / (calc_df['75th_percentile'] - calc_df['25th_percentile'] + epsilon)
+
+    elif model == 'momentum':
+        calc_df['momentum'] = calc_df['data'] - calc_df['data'].shift(rolling_window)
+        calc_df['log10_momentum'] = np.log10(np.abs(calc_df['data']) + 1) * np.sign(calc_df['data'])
+        result = calc_df['log10_momentum'] - calc_df['log10_momentum'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+
+    elif model == 'volatility':
+        calc_df['volatility'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (calc_df['data'] - calc_df['data'].shift(1)) / calc_df['volatility']
+        
+    elif model == 'psy':   # Still output [-3,3]
+        # Compute up_days and use rolling mean
+        calc_df['up_days'] = np.where(np.diff(calc_df['data'], prepend=series.iloc[0]) > 0, 1, 0)
+        result = (calc_df['up_days'].rolling(window=rolling_window, min_periods=rolling_window)
+                                   .mean() * 6) - 3
+
+    elif model == 'winsor': 
+        calc_df['lower_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
+        calc_df['upper_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
+        result = np.where(calc_df['data'] < calc_df['lower_bound'], 
+                          calc_df['lower_bound'], 
+                          np.where(calc_df['data'] > calc_df['upper_bound'], calc_df['upper_bound'], calc_df['data']))
+        
+    elif model == 'winsorized_zscore':
+        calc_df['lower_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
+        calc_df['upper_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
+        calc_df['winsorized'] = calc_df['data'].clip(lower=calc_df['lower_bound'], upper=calc_df['upper_bound'])
+        calc_df['winsorized_mean'] = calc_df['winsorized'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['winsorized_std'] = calc_df['winsorized'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = (calc_df['winsorized'] - calc_df['winsorized_mean']) / calc_df['winsorized_std']
+
+    elif model == 'sigmoid':
+        calc_df['roll_mean'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
+        calc_df['roll_std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        result = 2 / (1 + np.exp(-(series - calc_df['roll_mean']) / (calc_df['roll_std'] ))) - 1
+
+    elif model == 'robust_zscore':
+        calc_df['rolling_median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window, center=False).median()
+        calc_df['rolling_mad'] = calc_df['data'].rolling(rolling_window, min_periods=rolling_window, center=False).apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+
+        result = 0.6745 * (calc_df['data'] - calc_df['rolling_median']) / calc_df['rolling_mad']
+
+    elif model == 'tanh':
+        calc_df['rolling_median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window, center=False).median()
+        calc_df['rolling_mad'] = calc_df['data'].rolling(rolling_window, min_periods=rolling_window, center=False).apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
+
+        result = np.tanh((calc_df['data'] - calc_df['rolling_median']) / calc_df['rolling_mad'])
+    
+    elif model == 'chg':
+        result = (calc_df['data'] - calc_df['data'].shift(rolling_window)) / rolling_window
+
+    return result

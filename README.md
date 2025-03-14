@@ -1,3 +1,9 @@
+## 2nd Month Update:
+ - NanCheck
+ - New Models (bq models,)(需要安裝pandas_ta, pip install pandas_ta)
+ - New Entrys (trend_zero, trend_zero_fast)
+ - 舊model 改名(ezscore -> ezscorev1, roc -> Weirdroc, quantile -> pn_epsilon)
+ - 剩餘的model/entry 可以看config.py
 ## Python Module Installation
 
 Assumed you already created a conda environment.

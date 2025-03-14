@@ -1,29 +1,106 @@
-ALL_MODELS = ['zscore', 'minmaxscaling', 'smadiffv2', 'emadiffv2', 'momentum', 'volatility', 'robustscaler', 'percentile', 
-              'maxabs', 'meannorm', 'roc', 'rsi', 'psy', 'srsi', 'mad', 'quantile', 'winsorized_zscore', 'sigmoid',
-              'robust_zscore', 'tanh', 'slope']
+ALL_MODELS = [
+    "zscore",
+    "ezscore",
+    "ezscorev1",
+    "madzscore",
+    "robustscaler",
+    "minmaxscaling",
+    "meannorm",
+    "maxabs",
+    "smadiffv2_noabs",
+    "smadiffv2",
+    "emadiffv2_noabs",
+    "emadiffv2",
+    "mediandiffv2_noabs",
+    "mediandiffv2",
+    "mad",
+    "srsi",
+    "ersi",
+    "srsiv2",
+    "ersiv2",
+    "rsi",
+    "rvi",
+    "percentile",
+    "L2",
+    "kurtosis",
+    "skew",
+    "cci",
+    "Weirdroc",
+    "roc_ratio",
+    "pn",
+    "pn_epsilon",
+    "momentum_old",
+    "momentum",
+    "volatility",
+    "psy",
+    "winsor",
+    "winsorized_zscore",
+    "sigmoid",
+    "quantile",
+    "robust_zscore",
+    "tanh",
+    "chg"
+]
 
-ALL_ENTRYS = ['trend', 'trend_reverse', 'mr', 'mr_reverse', 'fast', 'trend_emaFilter', 'fast_emaFilter', 
-              'trend_long', 'trend_reverse_long', 'mr_long', 'mr_reverse_long', 'fast_long', 'trend_long_emaFilter', 'fast_long_emaFilter', 
-              'trend_short', 'trend_reverse_short', 'mr_short', 'mr_reverse_short', 'fast_short', 'trend_short_emaFilter', 'fast_short_emaFilter']
+ALL_ENTRYS = [
+    "trend",
+    "trend_reverse",
+    "mr",
+    "mr_reverse",
+    "trend_long",
+    "trend_short",
+    "trend_reverse_long",
+    "trend_reverse_short",
+    "mr_long",
+    "mr_short",
+    "mr_reverse_long",
+    "mr_reverse_short",
+    "fast",
+    "fast_long",
+    "fast_short",
+    "fast_reverse",
+    "fast_reverse_long",
+    "fast_reverse_short",
+    "trend_zero",
+    "trend_zero_long",
+    "trend_zero_short",
+    "trend_zero_fast",
+    "trend_zero_fast_long",
+    "trend_zero_fast_short"
+]
 
+# ALL_MODELS = ['zscore', 'smadiffv2']
+# ALL_ENTRYS = ['trend', 'mr']
+
+# 用於Resample candle data
 candle_timeframe = '1h'
-candle_delay = -5
+candle_delay = 25
+exchange_name='binance'
+coin='eth'
 
-model = 'winsorized_zscore'
-entry = 'trend_long_emaFilter'
-
-alpha_id='nfXDXD'
-factor = 'long_liquidations'
-factor2 = 'long_liquidations'
+USE_ALL_MODELS = False
+alpha_id='nf010_'
+factor = 'coinbase_premium_index'
+factor2 = 'coinbase_premium_gap'
 interval = '1h'
-operation = 'none'
-preprocess = 'diff'
+operation = '-'
+preprocess = 'direct'  # 可以輸入單個或多個, 單個的例子: 'direct', 多個的例子: ['direct', 'diff']
 
-window=65
-threshold=2
+model = 'zscore'
+entry = 'trend'
+window=265
+threshold=1.6
+output_csv_full_time=False
+save_plot = True
 
-save_plot = False
+candle_file = f"./data/resample_{coin}_{interval}_-{candle_delay}m.csv"
+factor_file = f"./data/cryptoquant_{coin}_coinbase-premium-index_{interval}.csv"
+factor2_file = f"./data/cryptoquant_{coin}_coinbase-premium-index_{interval}.csv"
 
-candle_file = f"./data/resample_bybit_btc_{interval}.csv"
-factor_file = f"./data/cryptoquant_btc_liquidations_{interval}.csv"
-factor2_file = f"./data/cryptoquant_btc_liquidations_{interval}.csv"
+symbol=coin.upper()
+factor_name = f'{factor}_001'
+# for endpoint
+datasource = 'cryptoquant'
+category = 'market-data'
+endpoint_name = 'coinbase-premium-index'
+exchange = 'none' # # all_exchange / binance / none
