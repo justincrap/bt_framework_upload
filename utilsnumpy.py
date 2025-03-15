@@ -151,8 +151,6 @@ def precompute_rolling_stats(series: pd.Series, windows: list) -> dict:
     return rolling_stats
 
 def model_calculation_cached(series, rolling_window, model='zscore', factor=None, rolling_stats=None): 
-    epsilon = 0
-
     if model == 'zscore':
         roll = series.rolling(window=rolling_window, min_periods=rolling_window)
         roll_mean = roll.mean()
@@ -181,14 +179,14 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         q3 = roll.quantile(0.75)
         roll_median = roll.median()
         iqr = q3 - q1
-        result = (series - roll_median) / (iqr + epsilon)
+        result = (series - roll_median) / iqr
 
     elif model == 'minmaxscaling':
         if rolling_window != 0:
             roll = series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_min = roll.min()
             roll_max = roll.max()
-            result = 2 * (series - roll_min) / (roll_max - roll_min + epsilon) - 1
+            result = 2 * (series - roll_min) / (roll_max - roll_min) - 1
         else:
             result = 2 * (series - series.min()) / (series.max() - series.min()) - 1
 
@@ -246,7 +244,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
             mad_values = np.mean(np.abs(windows - window_means), axis=1)
             # Pad the beginning with NaNs to align with the original series length
             rolling_mad = np.concatenate((np.full(rolling_window - 1, np.nan), mad_values))
-            result = (series - roll_mean) / (rolling_mad + epsilon)
+            result = (series - roll_mean) / rolling_mad
         else:
             result = np.nan
 
@@ -256,7 +254,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         loss = np.where(delta < 0, -delta, 0)
         avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
         avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
-        rs = avg_gain - avg_loss
+        rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         result = (rsi / 100 * 6) - 3
 
@@ -266,7 +264,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         loss = np.where(delta < 0, -delta, 0)
         avg_gain = pd.Series(gain, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         avg_loss = pd.Series(loss, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        rs = avg_gain - avg_loss
+        rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         result = (rsi / 100 * 6) - 3
 
@@ -276,7 +274,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         loss = np.where(delta < 0, -delta, 0)
         avg_gain = pd.Series(gain, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
         avg_loss = pd.Series(loss, index=series.index).rolling(window=rolling_window, min_periods=rolling_window).mean()
-        rs = avg_gain - avg_loss
+        rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         result = (rsi / 100 * 6) - 3
 
@@ -286,7 +284,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         loss = np.where(delta < 0, -delta, 0)
         avg_gain = pd.Series(gain, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         avg_loss = pd.Series(loss, index=series.index).ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        rs = avg_gain - avg_loss
+        rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         result = (rsi / 100 * 6) - 3
 
@@ -396,19 +394,19 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         roll = winsorized.rolling(window=rolling_window, min_periods=rolling_window)
         roll_mean = roll.mean()
         roll_std = roll.std(ddof=0)
-        result = (winsorized - roll_mean) / (roll_std + epsilon)
+        result = (winsorized - roll_mean) / roll_std
 
     elif model == 'sigmoid':
         roll = series.rolling(window=rolling_window, min_periods=rolling_window)
         roll_mean = roll.mean()
         roll_std = roll.std(ddof=0)
-        result = 2 / (1 + np.exp(-(series - roll_mean) / (roll_std + epsilon))) - 1
+        result = 2 / (1 + np.exp(-(series - roll_mean) / roll_std )) - 1
 
     elif model == 'quantile':
         q1 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
         q3 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
         iqr = q3 - q1
-        result = (series - q1) / (iqr + epsilon)
+        result = (series - q1) / iqr
 
     elif model == 'robust_zscore':
         arr = series.values.astype(np.float64)
@@ -467,16 +465,16 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
     elif model == 'roc_zscore':
         # Step 1: Compute ROC
         shifted_series = series.shift(rolling_window)
-        roc_series = (series - shifted_series) / (shifted_series + epsilon)
+        roc_series = (series - shifted_series) / shifted_series
         
         # Step 2: Apply Z-Score normalization on ROC
         if rolling_window != 0:
             roll = roc_series.rolling(window=rolling_window, min_periods=rolling_window)
             roll_mean = roll.mean()
             roll_std = roll.std(ddof=0)
-            result = (roc_series - roll_mean) / (roll_std + epsilon)
+            result = (roc_series - roll_mean) / roll_std 
         else:
-            result = (roc_series - roc_series.mean()) / (roc_series.std(ddof=0) + epsilon)
+            result = (roc_series - roc_series.mean()) / roc_series.std(ddof=0)
 
     return result
 
@@ -814,7 +812,8 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
              rolling_stats=None): 
     log_msgs = []
     fee = 0.0006
-    
+    # Initialize 
+    tail_ratio = np.nan
     start_time = max(candle_df['start_time'].min(), factor_df['start_time'].min())
     end_time = min(candle_df['start_time'].max(), factor_df['start_time'].max())
 
@@ -1050,7 +1049,6 @@ def additional_metrics(
     }
 
 def model_calculation_bq(series, rolling_window, model='zscore', factor='close', rolling_stats=None): 
-    epsilon = 0
     calc_df = pd.DataFrame()
     calc_df['data'] = series
 

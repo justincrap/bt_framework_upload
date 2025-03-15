@@ -7,11 +7,11 @@ ALL_MODELS = [
     "minmaxscaling",
     "meannorm",
     "maxabs",
-    "smadiffv2_noabs",
+    # "smadiffv2_noabs",
     "smadiffv2",
-    "emadiffv2_noabs",
+    # "emadiffv2_noabs",
     "emadiffv2",
-    "mediandiffv2_noabs",
+    # "mediandiffv2_noabs",
     "mediandiffv2",
     "mad",
     "srsi",
@@ -29,7 +29,7 @@ ALL_MODELS = [
     "roc_ratio",
     "pn",
     "pn_epsilon",
-    "momentum_old",
+    # "momentum_old",
     "momentum",
     "volatility",
     "psy",
@@ -74,26 +74,26 @@ ALL_ENTRYS = [
 
 # 用於Resample candle data
 candle_timeframe = '1h'
-candle_delay = 25
+candle_delay = 15
 exchange_name='binance'
 coin='eth'
 
-USE_ALL_MODELS = False
+USE_ALL_MODELS = True
 alpha_id='nf010_'
 factor = 'coinbase_premium_index'
 factor2 = 'coinbase_premium_gap'
 interval = '1h'
-operation = '-'
-preprocess = 'direct'  # 可以輸入單個或多個, 單個的例子: 'direct', 多個的例子: ['direct', 'diff']
+operation = 'none'
+preprocess = 'diff'  # 可以輸入單個或多個, 單個的例子: 'direct', 多個的例子: ['direct', 'diff']
 
 model = 'zscore'
 entry = 'trend'
 window=265
 threshold=1.6
 output_csv_full_time=False
-save_plot = True
+save_plot = False
 
-candle_file = f"./data/resample_{coin}_{interval}_-{candle_delay}m.csv"
+candle_file = f"./data/resample_{exchange_name}_{coin}_{interval}_-{candle_delay}m.csv"
 factor_file = f"./data/cryptoquant_{coin}_coinbase-premium-index_{interval}.csv"
 factor2_file = f"./data/cryptoquant_{coin}_coinbase-premium-index_{interval}.csv"
 
