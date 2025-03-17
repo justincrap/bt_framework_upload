@@ -52,8 +52,15 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
     if factor_nan_percent > 0.03:
         print(f"{c.factor} NaN percentage: {factor_nan_percent:.3f}, skipping backtest.")
         # End the backtest directly
+        sys.exit()
     else:
         print(f"{c.factor} NaN percentage: {factor_nan_percent:.3f}, proceeding with backtest.")
+
+    factor_zero_count = factor_data[factor].eq(0).sum()
+    factor_zero_percent = factor_zero_count / len(factor_data[factor])
+    if factor_zero_percent > 0.15:
+        print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}, skipping backtest.")
+        sys.exit()
 
     if factor2_data is not None:
         min_date = max(candle_data['start_time'].min(), factor_data['start_time'].min(), factor2_data['start_time'].min())
@@ -411,39 +418,41 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
     elif model == 'robust_zscore':
         arr = series.values.astype(np.float64)
         n = len(arr)
-        medians = np.empty(n)
-        mads = np.empty(n)
-
-        # 使用 sliding window trick 處理充足長度的部分
-        shape = (n - rolling_window + 1, rolling_window)
-        strides = (arr.strides[0], arr.strides[0])
-        windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
-        medians[rolling_window - 1:] = np.median(windows, axis=1)
-        mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
+        
+        medians = np.full(n, np.nan)
+        mads = np.full(n, np.nan)
+        if n >= rolling_window:
+            # 使用 sliding window trick 處理充足長度的部分
+            shape = (n - rolling_window + 1, rolling_window)
+            strides = (arr.strides[0], arr.strides[0])
+            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+            medians[rolling_window - 1:] = np.median(windows, axis=1)
+            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
         
         result = 0.6745 * (series - medians) / mads
 
     elif model == 'tanh':
         arr = series.values.astype(np.float64)
         n = len(arr)
+        
         medians = np.full(n, np.nan)
         mads = np.full(n, np.nan)
+        if n >= rolling_window:
+            # 使用 sliding window trick 處理充足長度的部分
+            shape = (n - rolling_window + 1, rolling_window)
+            strides = (arr.strides[0], arr.strides[0])
+            windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
+            medians[rolling_window - 1:] = np.median(windows, axis=1)
+            mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
 
-        # 使用 sliding window trick 處理充足長度的部分
-        shape = (n - rolling_window + 1, rolling_window)
-        strides = (arr.strides[0], arr.strides[0])
-        windows = np.lib.stride_tricks.as_strided(arr, shape=shape, strides=strides)
-        medians[rolling_window - 1:] = np.median(windows, axis=1)
-        mads[rolling_window - 1:] = np.median(np.abs(windows - medians[rolling_window - 1:, None]), axis=1)
-        
         result = np.tanh((series - medians) / mads)
 
     elif model == 'slope':
         arr = series.values
         n = len(arr)
-        if n < rolling_window:
-            slopes = np.full(n, np.nan)
-        else:
+        
+        slopes = np.full(n, np.nan)
+        if n >= rolling_window:
 
             windows = np.lib.stride_tricks.sliding_window_view(arr, window_shape=rolling_window)
 
@@ -808,14 +817,14 @@ def compute_drawdown_durations(cumu_pnl: np.ndarray,
     return durations.tolist()
 
 def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_window: int, threshold: float, preprocess_method="NONE",
-             entry_logic="Trend", annualizer=365, model='zscore', factor='close', interval='1d',
+             entry_logic="Trend", annualizer=365, model='zscore', factor='close', interval='1d', date_range=None,
              rolling_stats=None): 
     log_msgs = []
     fee = 0.0006
     # Initialize 
     tail_ratio = np.nan
-    start_time = max(candle_df['start_time'].min(), factor_df['start_time'].min())
-    end_time = min(candle_df['start_time'].max(), factor_df['start_time'].max())
+    # start_time = max(candle_df['start_time'].min(), factor_df['start_time'].min())    #Moved to Jupyter Cells
+    # end_time = min(candle_df['start_time'].max(), factor_df['start_time'].max())
 
     # 1. 模型計算（使用 cache 版本）
     factor_df['signal'] = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
@@ -874,24 +883,24 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     position = position_calculation(signal,  entry_logic, threshold)
 
     factor_df['pos'] = position
-    # 3.5 在 factor_df 和 candle_df 都加入 time 欄位
-    factor_df['time'] = pd.to_datetime(factor_df['start_time'], unit='ms')
-    candle_df['time'] = pd.to_datetime(candle_df['start_time'], unit='ms')
+    # 3.5 在 factor_df 和 candle_df 都加入 time 欄位 #Moved to Jupyter Cells
+    # factor_df['time'] = pd.to_datetime(factor_df['start_time'], unit='ms')
+    # candle_df['time'] = pd.to_datetime(candle_df['start_time'], unit='ms')
 
-    # 使用 time 作為索引
-    factor_df.set_index('time', inplace=True)
+    # 使用 time 作為索引    # Moved to Jupyter Cells
+    # factor_df.set_index('time', inplace=True)
 
-    # 創建完整的時間範圍索引
-    full_range = pd.date_range(start=pd.to_datetime(start_time, unit='ms'), 
-                            end=pd.to_datetime(end_time, unit='ms'), 
-                            freq=interval)
+    # # 創建完整的時間範圍索引 #Moved to Jupyter Cells
+    # full_range = pd.date_range(start=pd.to_datetime(start_time, unit='ms'), 
+    #                         end=pd.to_datetime(end_time, unit='ms'), 
+    #                         freq=interval)
 
     # 重新索引並前向填充缺失值
-    factor_df = factor_df.reindex(full_range)
+    factor_df = factor_df.reindex(date_range)
     factor_df = factor_df.ffill()
 
-    # 重新設定 candle_df 的索引
-    candle_df.set_index('time', inplace=True)
+    # 重新設定 candle_df 的索引    #Moved to Jupyter Cells
+    # candle_df.set_index('time', inplace=True)
 
     # 合併 candle_df 和 factor_df
     df = pd.concat([candle_df, factor_df], axis=1)  # 如果有問題可以用 merge_asof()
