@@ -61,6 +61,8 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
     if factor_zero_percent > 0.15:
         print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}, skipping backtest.")
         sys.exit()
+    else:
+        print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}.")
 
     if factor2_data is not None:
         min_date = max(candle_data['start_time'].min(), factor_data['start_time'].min(), factor2_data['start_time'].min())
@@ -158,15 +160,15 @@ def precompute_rolling_stats(series: pd.Series, windows: list) -> dict:
     return rolling_stats
 
 def model_calculation_cached(series, rolling_window, model='zscore', factor=None, rolling_stats=None): 
-    if model == 'zscore':
+    if model == 'zscorev1': # zscore 改成 zscorev1
         roll = series.rolling(window=rolling_window, min_periods=rolling_window)
         roll_mean = roll.mean()
         roll_std = roll.std(ddof=0)
         result = (series - roll_mean) / roll_std
 
-    elif model == 'ezscore':
+    elif model == 'ezscore': # 以前的ezscore使用std(ddof=0), 為了對齊 bq的model就只使用std()
         ewm_mean = series.ewm(span=rolling_window,min_periods=rolling_window, adjust=False).mean()
-        std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        std = series.rolling(window=rolling_window, min_periods=rolling_window).std()
         result = (series - ewm_mean) / std
 
     elif model == 'ezscorev1':
@@ -208,7 +210,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         roll_max_abs = series.abs().rolling(window=rolling_window, min_periods=rolling_window).max()
         result = series / roll_max_abs
 
-    elif model == 'smadiffv2_noabs':
+    elif model == 'smadiffv2_noabs': #應該會是一個不會再用的舊model
         sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
         result = (series - sma) / sma
 
@@ -216,7 +218,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         sma = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
         result = (series - sma) / sma.abs()
 
-    elif model == 'emadiffv2_noabs':
+    elif model == 'emadiffv2_noabs': #應該會是一個不會再用的舊model
         ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         result = (series - ewm_mean) / ewm_mean
 
@@ -224,7 +226,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         ewm_mean = series.ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         result = (series - ewm_mean) / ewm_mean.abs()
 
-    elif model == 'mediandiffv2_noabs':
+    elif model == 'mediandiffv2_noabs': #應該會是一個不會再用的舊model
         median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
         result = (series - median) / median
 
@@ -232,7 +234,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         median = series.rolling(window=rolling_window, min_periods=rolling_window).median()
         result = (series - median) / median.abs()
 
-    elif model == 'mad':
+    elif model == 'smadiffv3': # 舊名稱mad 對齊結果後變更為 smadiffv3
         # Use vectorized computation of rolling mean absolute deviation
         # Compute rolling mean using pandas
         roll_mean = series.rolling(window=rolling_window, min_periods=rolling_window).mean()
@@ -300,7 +302,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
         result = (rsi_values / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
-    elif model == 'rvi':    # srsi -> rvi
+    elif model == 'rvi':    # 
         delta = np.diff(series, prepend=np.nan)
         gain = np.where(delta > 0, delta, 0)
         loss = np.where(delta < 0, -delta, 0)
@@ -309,7 +311,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         rvi = ((avg_gain / (avg_gain + avg_loss)) * 100 - 50) / 50 * 3
         result = rvi
 
-    elif model == 'percentile': # ???, Not yet change
+    elif model == 'percentilerank': # 已經由percentile 變更為 percentilerank, 算式完全一樣
         result = series.rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
 
     elif model == 'L2':
@@ -358,7 +360,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         percentile75 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
         result = (series - percentile25) / (percentile75 - percentile25)
 
-    elif model == 'pn_epsilon': # Old name quantile -> pn(percentile_norm with epsilon)(bq do not have a standarize name yet)
+    elif model == 'pn_epsilon': # 舊名稱quantile 變更為 pn_epsilon 作為記錄, bq沒有記錄, 應該不會再使用
         epsilon = 1e-9
         percentile25 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
         percentile75 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
@@ -376,7 +378,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         roll_log_mom = log_momentum.rolling(window=rolling_window, min_periods=rolling_window)
         result = log_momentum - roll_log_mom.mean()
 
-    elif model == 'volatility':
+    elif model == 'volatilityv0': #舊名稱 volatility 變成為 volatilityv0
         rolling_std = series.rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
         result = (series - series.shift(1)) / rolling_std
 
@@ -394,7 +396,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
                           lower_bound, 
                           np.where(series > upper_bound, upper_bound, series))
 
-    elif model == 'winsorized_zscore':
+    elif model == 'winsor_zscorev1': # 舊名 winsorized_zscore 變更為 winsor_zscorev1
         lower_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
         upper_bound = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
         winsorized = series.clip(lower=lower_bound, upper=upper_bound)
@@ -409,13 +411,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
         roll_std = roll.std(ddof=0)
         result = 2 / (1 + np.exp(-(series - roll_mean) / roll_std )) - 1
 
-    elif model == 'quantile':
-        q1 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.25)
-        q3 = series.rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
-        iqr = q3 - q1
-        result = (series - q1) / iqr
-
-    elif model == 'robust_zscore':
+    elif model == 'robust_zscore':  # 應該要拋棄這個, 理論上跟 madzscore 一樣, 但是因為運算上的分別, 導致得出的結果不同
         arr = series.values.astype(np.float64)
         n = len(arr)
         
@@ -447,7 +443,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
 
         result = np.tanh((series - medians) / mads)
 
-    elif model == 'slope':
+    elif model == 'linearregressionslope':  # 舊名 slope 變更為 linearregressionslope
         arr = series.values
         n = len(arr)
         
@@ -470,20 +466,6 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
     elif model == 'chg':
         shifted = series.shift(rolling_window)
         result = (series - shifted) / rolling_window
-        
-    elif model == 'roc_zscore':
-        # Step 1: Compute ROC
-        shifted_series = series.shift(rolling_window)
-        roc_series = (series - shifted_series) / shifted_series
-        
-        # Step 2: Apply Z-Score normalization on ROC
-        if rolling_window != 0:
-            roll = roc_series.rolling(window=rolling_window, min_periods=rolling_window)
-            roll_mean = roll.mean()
-            roll_std = roll.std(ddof=0)
-            result = (roc_series - roll_mean) / roll_std 
-        else:
-            result = (roc_series - roc_series.mean()) / roc_series.std(ddof=0)
 
     return result
 
@@ -834,18 +816,21 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     # 2.1 將 inf 和 -inf 轉換成NaN
     factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
     # 2.2 3% NaN Check
-    if factor_df['signal'].isna().sum() < (0.03 * (len(factor_df['signal']) - rolling_window)) :
+    
+    if factor_df['signal'].isna().sum() < (0.4 * (len(factor_df['signal']) - rolling_window)) :
         # 2.3 將 NaN 值刪除
         signal_nan_count = nan_count(factor_df['signal'])
-        # msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
-        #        f"{c.factor} NaN count: {signal_nan_count}, Dropping NaN and Keep Backtest.")
+        msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f},"
+               f"{c.factor} NaN count: {signal_nan_count}, Dropping NaN and Keep Backtest,\n"
+               f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
         # log_msgs.append(msg)
         factor_df['signal'] = factor_df['signal'].dropna()
     else:
-        # msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
-        #        f"nan_count: {factor_df['signal'].isna().sum()}, {c.factor} NaN percentage: "
-        #        f"{factor_df['signal'].isna().sum() / len(factor_df['signal']):.3f}, skipping backtest.")
-        # log_msgs.append(msg)
+        msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
+               f"nan_count: {factor_df['signal'].isna().sum()}, {c.factor} NaN percentage,"
+               f"{factor_df['signal'].isna().sum() / len(factor_df['signal']):.3f}, skipping backtest,\n"
+               f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
+        log_msgs.append(msg)
         performance_metrics = {
         "factor_name": c.factor_name,
         "Data_Preprocess": preprocess_method,
@@ -1061,14 +1046,14 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
     calc_df = pd.DataFrame()
     calc_df['data'] = series
 
-    if model == 'zscore':
+    if model == 'zscorev1':
         calc_df['sma'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
         calc_df['std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
         result = (calc_df['data'] - calc_df['sma']) / (calc_df['std'])
 
     elif model == 'ezscore':
         calc_df['ema'] = calc_df['data'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        calc_df['std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
+        calc_df['std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std()
         result = (calc_df['data'] - calc_df['ema']) / (calc_df['std'])
 
     elif model == 'ezscorev1':  # Previous ezscore to ezscorev1
@@ -1115,7 +1100,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).median()
         result = (calc_df['data'] - calc_df['median']) / calc_df['median'].abs()
 
-    elif model == 'mad':
+    elif model == 'smadiffv3':
         calc_df['roll_mean'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).mean()
         calc_df['mad'] = (calc_df['data'].rolling(window=rolling_window,min_periods=rolling_window).apply(lambda x: np.mean(np.abs(x - x.mean()))))
         result = (calc_df['data'] - calc_df['roll_mean']) / calc_df['mad']
@@ -1126,7 +1111,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
         calc_df['avg_gain'] = calc_df['gain'].rolling(window=rolling_window, min_periods=rolling_window).mean()
         calc_df['avg_loss'] = calc_df['loss'].rolling(window=rolling_window, min_periods=rolling_window).mean()
-        calc_df['rs'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['rs'] = calc_df['avg_gain'] / calc_df['avg_loss']
         calc_df['rsi'] = 100 - (100 / (1+ calc_df['rs']))
         result = (calc_df['rsi'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
@@ -1136,7 +1121,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
         calc_df['avg_gain'] = calc_df['gain'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         calc_df['avg_loss'] = calc_df['loss'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        calc_df['ers'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['ers'] = calc_df['avg_gain'] / calc_df['avg_loss']
         calc_df['ersi'] = 100 - (100 / (1+ calc_df['ers']))
         result = (calc_df['ersi'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
@@ -1146,7 +1131,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
         calc_df['avg_gain'] = calc_df['gain'].rolling(window=rolling_window, min_periods=rolling_window).mean()
         calc_df['avg_loss'] = calc_df['loss'].rolling(window=rolling_window, min_periods=rolling_window).mean()
-        calc_df['rs'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['rs'] = calc_df['avg_gain'] / calc_df['avg_loss']
         calc_df['srsiv2'] = 100 - (100 / (1+ calc_df['rs']))
         result = (calc_df['srsiv2'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
@@ -1156,7 +1141,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['loss'] = -calc_df['delta'].where(calc_df['delta'] < 0, 0)
         calc_df['avg_gain'] = calc_df['gain'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
         calc_df['avg_loss'] = calc_df['loss'].ewm(span=rolling_window, min_periods=rolling_window, adjust=False).mean()
-        calc_df['ers'] = calc_df['avg_gain'] - calc_df['avg_loss']
+        calc_df['ers'] = calc_df['avg_gain'] / calc_df['avg_loss']
         calc_df['ersiv2'] = 100 - (100 / (1+ calc_df['ers']))
         result = (calc_df['ersiv2'] / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
@@ -1165,7 +1150,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         rsi_values = talib.RSI(series.values, timeperiod=rolling_window)
         result = (rsi_values / 100 * 6) - 3 # 將rsi範圍從從[0,100] 轉換到 [-3,3]
 
-    elif model == 'percentile': # ???, Not yet change
+    elif model == 'percentilerank': # 已經由percentile 變更為 percentilerank, 算式完全一樣
         result = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).rank(pct=True) * 2 - 1
 
     elif model == 'L2':
@@ -1197,18 +1182,24 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['75th_percentile'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.75)
         result = (calc_df['data'] - calc_df['25th_percentile']) / (calc_df['75th_percentile'] - calc_df['25th_percentile'])
     
-    elif model == 'pn_epsilon':   # Old name quantile -> pn(percentile_norm with epsilon)(bq do not have a standarize name yet)
+    elif model == 'pn_epsilon':   # 舊名稱quantile 變更為 pn_epsilon 作為記錄, bq沒有記錄, 應該不會再使用
         epsilon = 1e-9
         calc_df['25th_percentile'] = calc_df['data'].rolling(window=rolling_window).quantile(0.25)
         calc_df['75th_percentile'] = calc_df['data'].rolling(window=rolling_window).quantile(0.75)
         result = (calc_df['data'] - calc_df['25th_percentile']) / (calc_df['75th_percentile'] - calc_df['25th_percentile'] + epsilon)
+
+    elif model == 'momentum_old':   # Our Old Momentum
+        momentum = series - series.shift(rolling_window)
+        log_momentum = np.log10(np.abs(momentum) + 1) * np.sign(momentum)
+        roll_log_mom = log_momentum.rolling(window=rolling_window, min_periods=rolling_window)
+        result = log_momentum - roll_log_mom.mean()
 
     elif model == 'momentum':
         calc_df['momentum'] = calc_df['data'] - calc_df['data'].shift(rolling_window)
         calc_df['log10_momentum'] = np.log10(np.abs(calc_df['data']) + 1) * np.sign(calc_df['data'])
         result = calc_df['log10_momentum'] - calc_df['log10_momentum'].rolling(window=rolling_window, min_periods=rolling_window).mean()
 
-    elif model == 'volatility':
+    elif model == 'volatilityv0': #舊名稱 volatility 變成為 volatilityv0
         calc_df['volatility'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
         result = (calc_df['data'] - calc_df['data'].shift(1)) / calc_df['volatility']
         
@@ -1225,7 +1216,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
                           calc_df['lower_bound'], 
                           np.where(calc_df['data'] > calc_df['upper_bound'], calc_df['upper_bound'], calc_df['data']))
         
-    elif model == 'winsorized_zscore':
+    elif model == 'winsor_zscorev1': # 舊名 winsorized_zscore 變更為 winsor_zscorev1
         calc_df['lower_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.05)
         calc_df['upper_bound'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).quantile(0.95)
         calc_df['winsorized'] = calc_df['data'].clip(lower=calc_df['lower_bound'], upper=calc_df['upper_bound'])
@@ -1238,7 +1229,7 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
         calc_df['roll_std'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window).std(ddof=0)
         result = 2 / (1 + np.exp(-(series - calc_df['roll_mean']) / (calc_df['roll_std'] ))) - 1
 
-    elif model == 'robust_zscore':
+    elif model == 'robust_zscore':  # 應該要拋棄這個, 理論上跟 madzscore 一樣, 但是因為運算上的分別, 導致得出的結果不同
         calc_df['rolling_median'] = calc_df['data'].rolling(window=rolling_window, min_periods=rolling_window, center=False).median()
         calc_df['rolling_mad'] = calc_df['data'].rolling(rolling_window, min_periods=rolling_window, center=False).apply(lambda x: np.median(np.abs(x - np.median(x))), raw=True)
 
