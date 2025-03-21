@@ -885,6 +885,7 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
         factor_df['time'] = pd.to_datetime(factor_df.index)
 
     # 合併 candle_df 和 factor_df
+    factor_df['start_time'] = factor_df['start_time'].astype('int64')
     df = pd.merge_asof(candle_df.sort_values('start_time'), factor_df.sort_values('start_time'), on='start_time', direction='nearest', tolerance=10*60*1000)
 
     # 确保time列存在
