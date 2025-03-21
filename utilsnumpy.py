@@ -58,7 +58,7 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
 
     factor_zero_count = factor_data[factor].eq(0).sum()
     factor_zero_percent = factor_zero_count / len(factor_data[factor])
-    if factor_zero_percent > 0.15:
+    if factor_zero_percent > 0.3:
         print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}, skipping backtest.")
         sys.exit()
     else:
@@ -160,7 +160,13 @@ def precompute_rolling_stats(series: pd.Series, windows: list) -> dict:
     return rolling_stats
 
 def model_calculation_cached(series, rolling_window, model='zscore', factor=None, rolling_stats=None): 
-    if model == 'zscorev1': # zscore 改成 zscorev1
+    if model == 'zscore':   # Sample Standard deviation
+        roll = series.rolling(window=rolling_window, min_periods=rolling_window)
+        roll_mean = roll.mean()
+        roll_std = roll.std()
+        result = (series - roll_mean) / roll_std
+
+    elif model == 'zscorev1': # zscore 改成 zscorev1
         roll = series.rolling(window=rolling_window, min_periods=rolling_window)
         roll_mean = roll.mean()
         roll_std = roll.std(ddof=0)
@@ -454,7 +460,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
 
             x = np.arange(rolling_window)
             x_mean = np.mean(x)
-            denominator = np.sum((x - x_mean)**2) + epsilon        
+            denominator = np.sum((x - x_mean)**2)        
             window_means = np.mean(windows, axis=1)
             slopes_vec = np.sum((x - x_mean) * (windows - window_means[:, None]), axis=1) / denominator            
             constant_mask = np.all(np.abs(windows - windows[:, 0][:, None]) < 1e-12, axis=1)
@@ -466,7 +472,6 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
     elif model == 'chg':
         shifted = series.shift(rolling_window)
         result = (series - shifted) / rolling_window
-
     return result
 
 @njit(cache=True)
@@ -817,7 +822,7 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
     # 2.2 3% NaN Check
     
-    if factor_df['signal'].isna().sum() < (0.4 * (len(factor_df['signal']) - rolling_window)) :
+    if factor_df['signal'].isna().sum() < (0.6 * (len(factor_df['signal']) - rolling_window)) :
         # 2.3 將 NaN 值刪除
         signal_nan_count = nan_count(factor_df['signal'])
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f},"
