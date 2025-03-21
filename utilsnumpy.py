@@ -813,10 +813,10 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     # Initialize 
     tail_ratio = np.nan
 
-    # 1. 模型計算（使用 cache 版本）
-    modified_factor = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
-    factor_df[f'{model}_{factor}'] = modified_factor
-    factor_df['signal'] = modified_factor
+    # 1. 模型計算（使用 cache 版本)
+    factor_df[f'{model}_{factor}'] = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
+
+    factor_df['signal'] = factor_df[f'{model}_{factor}']
 
     # 2. Signal 3% NaN Check (大於3%就不回測, return None)
     # 2.1 將 inf 和 -inf 轉換成NaN
@@ -879,23 +879,10 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     factor_df = factor_df.reindex(date_range)
     factor_df = factor_df.ffill()
 
-    if 'time' not in candle_df.columns:
-        candle_df['time'] = pd.to_datetime(candle_df.index)
-    if 'time' not in factor_df.columns:
-        factor_df['time'] = pd.to_datetime(factor_df.index)
-
     # 合併 candle_df 和 factor_df
     factor_df['start_time'] = factor_df['start_time'].astype('int64')
-    df = pd.merge_asof(candle_df.sort_values('start_time'), factor_df.sort_values('start_time'), on='start_time', direction='nearest', tolerance=10*60*1000)
+    df = pd.merge_asof(candle_df.sort_values('start_time'), factor_df.sort_values('start_time'), on='start_time', direction='nearest') #, tolerance=10*60*1000
 
-    # 确保time列存在
-    if 'time' not in df.columns and 'time_x' in df.columns:
-        df['time'] = df['time_x']
-    elif 'time' not in df.columns and 'index' in df.columns:
-        df.rename(columns={'index': 'time'}, inplace=True)
-    elif 'time' not in df.columns:
-        # 如果合并后没有time列，则从start_time创建
-        df['time'] = pd.to_datetime(df['start_time'], unit='ms')
     df.set_index('time', inplace=True)
 
     # 4. 損益與績效計算
