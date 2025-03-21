@@ -58,7 +58,7 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
 
     factor_zero_count = factor_data[factor].eq(0).sum()
     factor_zero_percent = factor_zero_count / len(factor_data[factor])
-    if factor_zero_percent > 0.3:
+    if factor_zero_percent > 0.03:
         print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}, skipping backtest.")
         sys.exit()
     else:
@@ -460,7 +460,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
 
             x = np.arange(rolling_window)
             x_mean = np.mean(x)
-            denominator = np.sum((x - x_mean)**2)        
+            denominator = np.sum((x - x_mean)**2)
             window_means = np.mean(windows, axis=1)
             slopes_vec = np.sum((x - x_mean) * (windows - window_means[:, None]), axis=1) / denominator            
             constant_mask = np.all(np.abs(windows - windows[:, 0][:, None]) < 1e-12, axis=1)
@@ -472,6 +472,7 @@ def model_calculation_cached(series, rolling_window, model='zscore', factor=None
     elif model == 'chg':
         shifted = series.shift(rolling_window)
         result = (series - shifted) / rolling_window
+        
     return result
 
 @njit(cache=True)
@@ -814,15 +815,16 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     # end_time = min(candle_df['start_time'].max(), factor_df['start_time'].max())
 
     # 1. 模型計算（使用 cache 版本）
-    factor_df['signal'] = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
-    # factor_df['signal'] = modified_factor
+    modified_factor = model_calculation_cached(factor_df[factor], rolling_window, model, factor, rolling_stats)
+    factor_df[f'{model}_{factor}'] = modified_factor
+    factor_df['signal'] = modified_factor
 
     # 2. Signal 3% NaN Check (大於3%就不回測, return None)
     # 2.1 將 inf 和 -inf 轉換成NaN
     factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
     # 2.2 3% NaN Check
     
-    if factor_df['signal'].isna().sum() < (0.6 * (len(factor_df['signal']) - rolling_window)) :
+    if factor_df['signal'].isna().sum() < (0.03 * (len(factor_df['signal']) - rolling_window)) :
         # 2.3 將 NaN 值刪除
         signal_nan_count = nan_count(factor_df['signal'])
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f},"
@@ -893,7 +895,8 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     # candle_df.set_index('time', inplace=True)
 
     # 合併 candle_df 和 factor_df
-    df = pd.concat([candle_df, factor_df], axis=1)  # 如果有問題可以用 merge_asof()
+    # df = pd.concat([candle_df, factor_df], axis=1)  # 如果有問題可以用 merge_asof()
+    df = pd.merge_asof(candle_df.sort_values('start_time'), factor_df.sort_values('start_time'), on='start_time', direction='nearest', tolerance=10*60*1000)
 
     # 確保索引是 time
     df.reset_index(inplace=True)
@@ -1246,6 +1249,29 @@ def model_calculation_bq(series, rolling_window, model='zscore', factor='close',
 
         result = np.tanh((calc_df['data'] - calc_df['rolling_median']) / calc_df['rolling_mad'])
     
+    elif model == 'linearregressionslope':
+        def rolling_regression_slope(series: pd.Series, rolling_window: int):
+            x = np.arange(rolling_window)
+            x_mean = x.mean()
+            denominator = np.sum((x - x_mean) ** 2)
+
+            rolling_mean = series.rolling(rolling_window).mean()
+
+            # Compute slope using rolling apply
+            def compute_slope(window):
+                if window.isna().any():
+                    return np.nan
+                y = window.values
+                y_mean = y.mean()
+                numerator = np.sum((x - x_mean) * (y - y_mean))
+                return numerator / denominator
+
+            slopes = series.rolling(rolling_window).apply(compute_slope, raw=False)
+
+            return slopes
+
+        result = rolling_regression_slope(calc_df['data'], rolling_window)
+
     elif model == 'chg':
         result = (calc_df['data'] - calc_df['data'].shift(rolling_window)) / rolling_window
 
