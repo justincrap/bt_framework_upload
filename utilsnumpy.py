@@ -90,43 +90,194 @@ def nan_count(series):
     nan_count = series.isna().sum()
     return nan_count
 
-def combines_data(series1: np.ndarray, series2: np.ndarray, operation, factor1, factor2):
+def split_data(raw_candle, raw_factor, years_for_training=3):
+    """
+    Split financial data correctly, with special handling for weekday-only data.
+    
+    Parameters:
+    - raw_candle: DataFrame with candle data
+    - raw_factor: DataFrame with factor data
+    - years_for_training: Number of years to use for training (default: 3)
+    
+    Returns:
+    - Dictionary containing train, test, and full datasets
+    """
+    # Make sure data is sorted by timestamp
+    raw_candle = raw_candle.sort_values('start_time').reset_index(drop=True)
+    raw_factor = raw_factor.sort_values('start_time').reset_index(drop=True)
+    
+    # Convert start_time to datetime for easier date manipulation
+    candle_dates = pd.to_datetime(raw_candle['start_time'], unit='ms')
+    factor_dates = pd.to_datetime(raw_factor['start_time'], unit='ms')
+    
+    # Detect if the data is weekday-only by checking for weekends in a sample
+    # We'll check the factor data since that's the one likely to be weekday-only
+    is_weekday_only = False
+    
+    # Check a sample of dates to see if there are any weekends
+    # Using a sample size of min(100, len(factor_dates)) to avoid checking the entire dataset
+    sample_size = min(100, len(factor_dates))
+    sample_dates = factor_dates.sample(sample_size) if len(factor_dates) > sample_size else factor_dates
+    weekend_count = sum(date.weekday() >= 5 for date in sample_dates)
+    
+    # If less than 5% of sampled dates are on weekends, it's likely weekday-only data
+    if weekend_count / sample_size < 0.05:
+        is_weekday_only = True
+        print("Detected weekday-only data source - using business day adjustment for split")
+    else:
+        print("Detected 24/7 data source - using standard calendar split")
+    
+    # Get the earliest date in the dataset
+    start_date = candle_dates.min()
+    
+    # Calculate the end date for training (start_date + years_for_training years)
+    train_end_date = start_date + pd.DateOffset(years=years_for_training)
+    
+    # If weekday-only data and train_end_date falls on a weekend, move to next business day
+    if is_weekday_only and train_end_date.weekday() >= 5:  # If it's a weekend
+        days_to_add = 7 - train_end_date.weekday() + 0  # Move to next Monday
+        train_end_date = train_end_date + pd.DateOffset(days=days_to_add)
+        print(f"Adjusted split date from weekend to next business day: {train_end_date}")
+    
+    print(f"Training period: {start_date} to {train_end_date}")
+    
+    # Convert back to milliseconds timestamp for comparison
+    train_end_timestamp = int(train_end_date.timestamp() * 1000)
+    
+    # Find the index where the split should occur
+    split_indices = raw_candle[raw_candle['start_time'] >= train_end_timestamp].index
+    
+    if len(split_indices) == 0:
+        print("Warning: No data points after the training period end date. Using all data for training.")
+        candle_train = raw_candle.copy()
+        factor_train = raw_factor.copy()
+        candle_test = pd.DataFrame(columns=raw_candle.columns)
+        factor_test = pd.DataFrame(columns=raw_factor.columns)
+    else:
+        split_idx = split_indices[0]
+        
+        # Get the actual timestamp at the split point to ensure it exists in our data
+        split_timestamp = raw_candle.iloc[split_idx]['start_time']
+        
+        # Split the data
+        candle_train = raw_candle.iloc[:split_idx].copy()
+        factor_train = raw_factor[raw_factor['start_time'] < split_timestamp].copy()
+        
+        candle_test = raw_candle.iloc[split_idx:].copy()
+        factor_test = raw_factor[raw_factor['start_time'] >= split_timestamp].copy()
+    
+    candle_full = raw_candle.copy()
+    factor_full = raw_factor.copy()
+    
+    # Print some info about the splits
+    print(f"Training data: {len(candle_train)} candles from {pd.to_datetime(candle_train['start_time'].min(), unit='ms')} to {pd.to_datetime(candle_train['start_time'].max(), unit='ms')}")
+    
+    if not candle_test.empty:
+        print(f"Testing data: {len(candle_test)} candles from {pd.to_datetime(candle_test['start_time'].min(), unit='ms')} to {pd.to_datetime(candle_test['start_time'].max(), unit='ms')}")
+        if factor_test.empty:
+            print("Warning: No factor data available for testing period!")
+        else:
+            print(f"Testing factor data: {len(factor_test)} points from {pd.to_datetime(factor_test['start_time'].min(), unit='ms')} to {pd.to_datetime(factor_test['start_time'].max(), unit='ms')}")
+    else:
+        print("Testing data: None")
+    
+    return {
+        'train': {'candle': candle_train, 'factor': factor_train},
+        'test': {'candle': candle_test, 'factor': factor_test},
+        'full': {'candle': candle_full, 'factor': factor_full}
+    }
+
+
+def combines_data(factor_df: pd.DataFrame, factor1: str, factor2: str, operation: str):
+    """
+    Combines two factors from a DataFrame using specified operation and handles infinite values.
+    
+    Parameters:
+        factor_df (pd.DataFrame): DataFrame containing the factor columns
+        factor1 (str): Name of the first factor column
+        factor2 (str): Name of the second factor column
+        operation (str): Operation to perform ('+', '-', '*', '/')
+    
+    Returns:
+        tuple: (processed DataFrame, new factor name)
+    """
+    # Create the new factor name from the operation
+    new_factor_name = f"{factor1}{operation}{factor2}"
+    
+    # Perform the requested operation and store directly in DataFrame
     if operation == '+':
-        return series1 + series2, f"{factor1}{operation}{factor2}"
+        factor_df[new_factor_name] = factor_df[factor1] + factor_df[factor2]
     elif operation == '-':
-        return series1 - series2, f"{factor1}{operation}{factor2}"
+        factor_df[new_factor_name] = factor_df[factor1] - factor_df[factor2]
     elif operation == '*':
-        return series1 * series2, f"{factor1}{operation}{factor2}"
+        factor_df[new_factor_name] = factor_df[factor1] * factor_df[factor2]
     elif operation == '/':
-        return series1 / series2, f"{factor1}{operation}{factor2}"
+        factor_df[new_factor_name] = factor_df[factor1] / factor_df[factor2]
     else:
         raise ValueError(f"不支援的運算: {operation}")
     
-def data_processing(series, method, factor):
-    # 開始轉換
-    if method == 'log':
-        series = np.log(series) # series.replace(0, np.nan) OLD!!
-    elif method == 'log10':
-        series = np.log10(series)
-    elif method == 'pct_chg':
-        series = series.pct_change()
-    elif method == 'diff':
-        series = series.diff()
-    elif method == 'square':
-        series = np.square(series)
-    elif method == 'sqrt':
-        series = np.sqrt(series)
-    elif method == 'cube':
-        series = np.power(series, 3)
-    elif method == 'cbrt':
-        series = np.cbrt(series)
-    elif method == 'boxcox':
-        series, best_lambda = boxcox(series)
-    else:
-        raise ValueError(f"Invalid transformation method: {method}")
+    # Replace any infinite values with NaN
+    factor_df[new_factor_name].replace([np.inf, -np.inf], np.nan, inplace=True)
     
-    series.replace([np.inf, -np.inf], np.nan, inplace=True)
-    return series
+    # Remove any rows with NaN values
+    factor_df = factor_df.dropna()
+    
+    return factor_df, new_factor_name
+    
+def data_processing(factor_df, method, factor):
+    """
+    Apply a transformation method to a factor column in a DataFrame.
+    
+    Parameters:
+        factor_df (pd.DataFrame): DataFrame containing the factor column
+        method (str): Transformation method to apply
+        factor (str): Name of the factor column
+        
+    Returns:
+        pd.DataFrame: DataFrame with the new transformed column added
+        str: Name of the new transformed column
+    """
+    # Create a copy to avoid modifying the original
+    factor_df = factor_df.copy()
+   
+    # Create new column name for the transformed data
+    new_factor_name = f"{factor}_{method}"
+    
+    # Apply transformation directly to the DataFrame
+    try:      
+        if method == 'log':
+            factor_df[new_factor_name] = np.log(factor_df[factor])
+        elif method == 'log10':
+            factor_df[new_factor_name] = np.log10(factor_df[factor])
+        elif method == 'pct_chg':
+            factor_df[new_factor_name] = factor_df[factor].pct_change()
+        elif method == 'diff':
+            factor_df[new_factor_name] = factor_df[factor].diff()
+        elif method == 'square':
+            factor_df[new_factor_name] = np.square(factor_df[factor])
+        elif method == 'sqrt':
+            factor_df[new_factor_name] = np.sqrt(factor_df[factor])
+        elif method == 'cube':
+            factor_df[new_factor_name] = np.power(factor_df[factor], 3)
+        elif method == 'cbrt':
+            factor_df[new_factor_name] = np.cbrt(factor_df[factor])
+        elif method == 'boxcox':
+            factor_df[new_factor_name], _ = boxcox(factor_df[factor])
+        else:
+            raise ValueError(f"Invalid transformation method: {method}")
+    except Exception as e:
+        print(f"Error in {method} transformation: {str(e)}, Using Raw Data")
+        factor_df[new_factor_name] = factor_df[factor].copy()
+        new_factor_name = factor
+    
+    # Replace infinities with NaN
+    factor_df[new_factor_name] = factor_df[new_factor_name].replace([np.inf, -np.inf], np.nan)
+    
+    # 修改这里: 从第二条数据开始 (skip first row) 并丢弃NaN值
+    # 原先的代码: factor_df = factor_df.dropna(subset=[new_factor_name])
+    factor_df = factor_df.dropna(subset=[new_factor_name])
+    
+    return factor_df, new_factor_name
 
 def precompute_rolling_stats(series: pd.Series, windows: list) -> dict:
     """
@@ -880,7 +1031,7 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     factor_df = factor_df.ffill()
 
     # 合併 candle_df 和 factor_df
-    factor_df['start_time'] = factor_df['start_time'].astype('int64')
+    factor_df['start_time'] = factor_df.index.astype('int64') // 10**6
     df = pd.merge_asof(candle_df.sort_values('start_time'), factor_df.sort_values('start_time'), on='start_time', direction='nearest') #, tolerance=10*60*1000
 
     df.set_index('time', inplace=True)
@@ -902,6 +1053,18 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     pct_change = np.concatenate(([0], np.diff(close) / close[:-1]))
 
     pnl = pct_change * shifted_pos - trades * fee
+
+    # 检查pnl中是否有NaN值
+    if np.isnan(pnl).any():
+        print(f"Warning: PnL contains {np.isnan(pnl).sum()} NaN values")
+        # 填充NaN值为0
+        pnl = np.nan_to_num(pnl, nan=0.0)
+
+    if np.isnan(trades).any():
+        print(f"Warning: Trades contains {np.isnan(trades).sum()} NaN values")
+        # 填充NaN值为0
+        trades = np.nan_to_num(trades, nan=0.0)
+
     cumu_pnl = np.cumsum(pnl)
     cumu_max = np.maximum.accumulate(cumu_pnl)
     drawdown = cumu_pnl - cumu_max
