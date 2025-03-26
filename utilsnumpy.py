@@ -978,14 +978,14 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
         # 2.3 將 NaN 值刪除
         signal_nan_count = nan_count(factor_df['signal'])
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f},"
-               f"{c.factor} NaN count: {signal_nan_count}, Dropping NaN and Keep Backtest,\n"
+               f"{c.factor} NaN% : {signal_nan_count / (len(factor_df['signal']) - rolling_window):.3f}, Dropping NaN and Keep Backtest,\n"
                f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
         # log_msgs.append(msg)
         factor_df['signal'] = factor_df['signal'].dropna()
     else:
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
                f"nan_count: {factor_df['signal'].isna().sum()}, {c.factor} NaN percentage,"
-               f"{factor_df['signal'].isna().sum() / len(factor_df['signal']):.3f}, skipping backtest,\n"
+               f"{factor_df['signal'].isna().sum() / len(factor_df['signal'] - rolling_window):.3f}, skipping backtest,\n"
                f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
         log_msgs.append(msg)
         performance_metrics = {
