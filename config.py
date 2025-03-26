@@ -91,6 +91,8 @@ factor_name = f'{factor}_001'
 interval = '1h'
 operation = 'none'
 preprocess = 'direct'  # 可以輸入單個或多個, 單個的例子: 'direct', 多個的例子: ['direct', 'diff']
+nan_perc = 0.03
+zero_perc = 0.3
 
 # 用於Heatmap Loop
 window_end = 351

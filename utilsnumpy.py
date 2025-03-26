@@ -40,7 +40,7 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
         factor2_data = load_single_data(factor2_file, factor2)
         factor2_nan = nan_count(factor2_data[factor2])
         factor2_nan_percent = factor2_nan / len(factor2_data[factor2])
-        if factor2_nan_percent > 0.03:
+        if factor2_nan_percent > c.nan_perc:
             print(f"{c.factor2} NaN percentage: {factor2_nan:.3f}, skipping backtest.")
             # End the backtest directly
             sys.exit()  # 直接結束當前 Jupyter cell # 如果之後要修改做 Hopeless的python版本要修改一下
@@ -49,7 +49,7 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
 
     factor_nan = nan_count(factor_data[factor])
     factor_nan_percent = factor_nan / len(factor_data[factor])
-    if factor_nan_percent > 0.03:
+    if factor_nan_percent > c.nan_perc:
         print(f"{c.factor} NaN percentage: {factor_nan_percent:.3f}, skipping backtest.")
         # End the backtest directly
         sys.exit()
@@ -58,7 +58,7 @@ def load_all_data(candle_file, factor_file, factor2_file, factor, factor2):
 
     factor_zero_count = factor_data[factor].eq(0).sum()
     factor_zero_percent = factor_zero_count / len(factor_data[factor])
-    if factor_zero_percent > 0.03:
+    if factor_zero_percent > c.zero_perc:
         print(f"{c.factor} zero percentage: {factor_zero_percent:.3f}, skipping backtest.")
         sys.exit()
     else:
@@ -974,7 +974,7 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
     # 2.2 3% NaN Check
     
-    if factor_df['signal'].isna().sum() < (0.03 * (len(factor_df['signal']) - rolling_window)) :
+    if factor_df['signal'].isna().sum() < (c.nan_perc * (len(factor_df['signal']) - rolling_window)) :
         # 2.3 將 NaN 值刪除
         signal_nan_count = nan_count(factor_df['signal'])
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f},"
