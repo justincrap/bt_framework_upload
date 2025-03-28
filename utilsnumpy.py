@@ -974,18 +974,18 @@ def backtest_cached(candle_df: pd.DataFrame, factor_df: pd.DataFrame, rolling_wi
     factor_df['signal'] = factor_df['signal'].replace([np.inf, -np.inf], np.nan)
     # 2.2 3% NaN Check
     
-    if factor_df['signal'].isna().sum() < (c.nan_perc * (len(factor_df['signal']) - rolling_window)) :
+    if factor_df['signal'].isna().sum() < (c.nan_perc * len(factor_df['signal'])) :
         # 2.3 Drop NaN values
         signal_nan_count = nan_count(factor_df['signal'])
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
-               f"{c.factor} NaN% : {(signal_nan_count / (len(factor_df['signal']) - rolling_window)):.3f}, Dropping NaN and Keep Backtest,\n"
+               f"{c.factor} NaN% : {(signal_nan_count / len(factor_df['signal'])):.3f}, Dropping NaN and Keep Backtest,\n"
                f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
         log_msgs.append(msg)
         factor_df['signal'] = factor_df['signal'].dropna()
     else:
         msg = (f"{c.alpha_id}, window: {rolling_window}, threshold: {threshold:.2f}, "
                f"nan_count: {factor_df['signal'].isna().sum()}, {c.factor} NaN%: "
-               f"{(factor_df['signal'].isna().sum() / (len(factor_df['signal']) - rolling_window)):.3f}, skipping backtest,\n"
+               f"{(factor_df['signal'].isna().sum() / len(factor_df['signal'])):.3f}, skipping backtest,\n"
                f"Total candle count: {len(candle_df)}, Total signal count: {len(factor_df['signal'])}.")
         log_msgs.append(msg)
         performance_metrics = {
